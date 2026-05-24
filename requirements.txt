@@ -1,0 +1,13 @@
+
+fastapi
+uvicorn[standard]
+
+crawl4ai==0.4.24
+playwright>=1.49.0
+
+sqlalchemy
+aiosqlite==0.20.0
+
+python-dotenv
+pydantic
+

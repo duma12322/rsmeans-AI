@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.env
+
+# Playwright
+playwright/.cache/
+
+# Session
+session.json
+
+# Database
+*.db
+*.sqlite3
+
+# VSCode
+.vscode/
+
+# Logs
+*.log
