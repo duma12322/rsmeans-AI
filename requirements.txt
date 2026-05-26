@@ -11,3 +11,8 @@ aiosqlite==0.20.0
 python-dotenv
 pydantic
 
+questionary
+readchar
+
+prompt_toolkit
+
