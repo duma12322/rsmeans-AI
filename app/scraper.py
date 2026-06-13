@@ -119,35 +119,37 @@ async def scrape_grid(page):
 
     await wait_rsmeans_data(page)
 
-    col_map = await get_column_map(page)
-
-    bare_idx = find_col(col_map, "bare")
-    op_idx = find_col(col_map, "o&p")
-
-    rows = await page.query_selector_all("table.ui-jqgrid-btable tr.jqgrow")
+    rows = await page.query_selector_all(
+        "table.ui-jqgrid-btable tr.jqgrow"
+    )
 
     data = []
 
     for row in rows:
+
         cells = await row.query_selector_all("td")
-        if not cells:
+
+        if len(cells) < 23:
             continue
 
-        description = normalize(await get_cell_value(cells[6]))
-        unit = normalize(await get_cell_value(cells[8]))
+        description = normalize(
+            await get_cell_value(cells[6])
+        )
 
-        raw_bare = await get_cell_value(cells[bare_idx]) if bare_idx is not None else ""
-        raw_op = await get_cell_value(cells[op_idx]) if op_idx is not None else ""
+        unit = normalize(
+            await get_cell_value(cells[8])
+        )
 
-        # DEBUG (IMPORTANTE)
-        if raw_bare == "" or raw_op == "":
-            print("⚠️ EMPTY COST DETECTED:", description)
+        # RSMeans REAL
+        raw_bare_total = await get_cell_value(cells[18])
+
+        raw_total_op = await get_cell_value(cells[21])
 
         data.append({
             "description": description,
             "unit": unit,
-            "bare_total": clean_number(raw_bare),
-            "total_op": clean_number(raw_op)
+            "bare_total": clean_number(raw_bare_total),
+            "total_op": clean_number(raw_total_op)
         })
 
     return data
