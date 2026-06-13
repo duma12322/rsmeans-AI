@@ -1,18 +1,22 @@
+# FASTAPI STACK
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
 
-fastapi
-uvicorn[standard]
-
-crawl4ai==0.4.24
+# SCRAPING ENGINE
 playwright>=1.49.0
+crawl4ai==0.4.24
 
-sqlalchemy
-aiosqlite==0.20.0
+# DATABASE
+sqlalchemy>=2.0.0
+aiosqlite>=0.20.0
 
-python-dotenv
-pydantic
+# ENV CONFIG
+python-dotenv>=1.0.0
 
-questionary
-readchar
+# MODELS / VALIDATION
+pydantic>=2.5.0
 
-prompt_toolkit
-
+# CLI TOOLS (si usas modo consola scraper)
+questionary>=2.0.0
+readchar>=4.0.0
+prompt_toolkit>=3.0.40

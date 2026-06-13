@@ -18,3 +18,5 @@ class RSMeansItem(Base):
     item_code = Column(String)
     title = Column(String)
     description = Column(Text)
+
+    
