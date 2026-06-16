@@ -24,55 +24,65 @@ def format_options(children):
 
 
 def select_level(question, path):
+    """
+    Select the next node in the hierarchy.
 
+    Returns (code, name, meta) where meta carries the routing diagnostics:
+        {
+            "confidence": "high" | "medium" | "low",
+            "clarify":    str | None,   # question to ask when ambiguous
+            "ranked":     [code, ...],  # full ranking the AI returned
+            "fallback":   bool,         # True if we had to guess
+        }
+
+    Unlike the previous version, this never *silently* falls back to the first
+    option: if the AI is unavailable or returns nothing usable, we still must
+    return something for the browser to click, but we flag it as low-confidence
+    fallback so the caller can surface that to the user.
+    """
     children = get_children(path)
     options = format_options(children)
 
-    options_text = "\n".join([
-        f"{o['code']} - {o['name']}"
-        for o in options
-    ])
+    if not options:
+        return None, None, {
+            "confidence": "low", "clarify": None, "ranked": [], "fallback": True
+        }
 
     print("\n" + "=" * 80)
-    print("QUESTION:")
-    print(question)
+    print("QUESTION:", question)
+    print("CURRENT PATH:", " > ".join(path) if path else "ROOT")
+    print(f"OPTIONS: {len(options)} children")
 
-    print("\nCURRENT PATH:")
-    print(" > ".join(path) if path else "ROOT")
+    result = choose_node(question, options, path)
+    ranked = result["ranked"]
+    confidence = result["confidence"]
+    clarify = result["clarify"]
 
-    print("\nAVAILABLE OPTIONS:")
-    for o in options:
-        print(f"{o['code']} - {o['name']}")
+    print("AI RANKED:", ranked or "(none)")
+    print("CONFIDENCE:", confidence)
+    if clarify:
+        print("CLARIFY:", clarify)
 
-    print("\nASKING AI...")
-
-    raw = choose_node(question, options_text, path)
-
-    print("\nAI RAW RESPONSE:")
-    print(raw)
-
-    selected = raw.split(" - ")[0].strip()
-
-    print("\nAI SELECTED CODE:")
-    print(selected)
-
-    for o in options:
-
-        if o["code"] == selected:
-
-            print("\nMATCH FOUND:")
-            print(f"{o['code']} - {o['name']}")
+    # Best valid candidate = first ranked code that exists as an option.
+    by_code = {o["code"]: o["name"] for o in options}
+    for code in ranked:
+        if code in by_code:
+            print(f"SELECTED: {code} - {by_code[code]}")
             print("=" * 80)
+            return code, by_code[code], {
+                "confidence": confidence,
+                "clarify": clarify,
+                "ranked": ranked,
+                "fallback": False,
+            }
 
-            return o["code"], o["name"]
-
-    print("\nAI FAILED -> FALLBACK")
-
-    print(
-        f"FALLBACK SELECTED: "
-        f"{options[0]['code']} - {options[0]['name']}"
-    )
-
+    # Nothing usable came back — last-resort guess, clearly flagged.
+    fallback = options[0]
+    print(f"NO VALID RANKING -> FALLBACK GUESS: {fallback['code']} - {fallback['name']}")
     print("=" * 80)
-
-    return options[0]["code"], options[0]["name"]
+    return fallback["code"], fallback["name"], {
+        "confidence": "low",
+        "clarify": clarify,
+        "ranked": ranked,
+        "fallback": True,
+    }

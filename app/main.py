@@ -17,5 +17,5 @@ class AskRequest(BaseModel):
 
 @app.post("/ask")
 async def ask(req: AskRequest):
-    rows = await start_browser(req.question)
-    return {"rows": rows}
+    result = await start_browser(req.question)
+    return result

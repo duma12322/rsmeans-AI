@@ -213,13 +213,15 @@ async def start_browser(question):
         await wait_tree_ready(page)
 
         path = []
+        route_meta = []  # routing diagnostics per level (confidence, fallback, ...)
 
         # ================= LEVEL 1 =================
         l1_nodes = await page.query_selector_all("#leftTreeMenu > ul > li")
         l1 = await parse_nodes(l1_nodes)
 
-        c1, n1 = select_level(question, path)
+        c1, n1, m1 = select_level(question, path)
         path.append(c1)
+        route_meta.append(m1)
 
         await l1[[x["code"] for x in l1].index(c1)]["node"].click()
         await page.wait_for_timeout(1200)
@@ -228,8 +230,9 @@ async def start_browser(question):
         l2_nodes = await page.query_selector_all("#leftTreeMenu > ul > li > ul > li")
         l2 = await parse_nodes(l2_nodes)
 
-        c2, n2 = select_level(question, path)
+        c2, n2, m2 = select_level(question, path)
         path.append(c2)
+        route_meta.append(m2)
 
         await l2[[x["code"] for x in l2].index(c2)]["node"].click()
         await page.wait_for_timeout(1200)
@@ -238,8 +241,9 @@ async def start_browser(question):
         l3_nodes = await page.query_selector_all("#leftTreeMenu li li li")
         l3 = await parse_nodes(l3_nodes)
 
-        c3, n3 = select_level(question, path)
+        c3, n3, m3 = select_level(question, path)
         path.append(c3)
+        route_meta.append(m3)
 
         await l3[[x["code"] for x in l3].index(c3)]["node"].click()
         await page.wait_for_timeout(1200)
@@ -248,8 +252,9 @@ async def start_browser(question):
         l4_nodes = await page.query_selector_all("#leftTreeMenu li li li li")
         l4 = await parse_nodes(l4_nodes)
 
-        c4, n4 = select_level(question, path)
+        c4, n4, m4 = select_level(question, path)
         path.append(c4)
+        route_meta.append(m4)
 
         await l4[[x["code"] for x in l4].index(c4)]["node"].click()
 
@@ -274,4 +279,23 @@ async def start_browser(question):
         print("\nFINAL PATH:", " -> ".join(path))
         print(f"FINAL NODE: {c4} - {n4}")
 
-        return rows
+        # Overall confidence = the weakest hop; collect any clarify prompts and
+        # whether any level had to fall back to a guess.
+        order = {"high": 3, "medium": 2, "low": 1}
+        overall_confidence = min(
+            (m["confidence"] for m in route_meta),
+            key=lambda c: order.get(c, 1),
+            default="low",
+        )
+        clarifications = [m["clarify"] for m in route_meta if m.get("clarify")]
+        had_fallback = any(m.get("fallback") for m in route_meta)
+
+        return {
+            "rows": rows,
+            "path": path,
+            "final_code": c4,
+            "final_name": n4,
+            "confidence": overall_confidence,
+            "fallback_used": had_fallback,
+            "clarifications": clarifications,
+        }
