@@ -125,6 +125,11 @@ async def main():
 
         print("\nTREE COMPLETO ✔")
 
+        # Derive the most relevant keywords per division from what we just
+        # scraped, so the knowledge layer stays in sync with the live taxonomy.
+        from app.keyword_extractor import generate
+        generate()
+
         await browser.close()
 
 
