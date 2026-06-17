@@ -9,6 +9,8 @@ from app.scraper import start_browser
 
 app = FastAPI()
 
+# Commit
+
 # correr el scraper en un hilo dedicado con su propio Proactor loop.
 _executor = ThreadPoolExecutor(max_workers=1)
 
