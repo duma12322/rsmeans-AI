@@ -41,6 +41,22 @@ STOPWORDS = {
     "minus", "day", "days", "week", "month", "months", "year", "hour", "hours",
     "high", "low", "wide", "long", "deep", "thick", "size", "sizes", "use",
     "device", "rent", "value", "note", "item", "items", "set", "ea",
+    # connectors / fragments that produce junk bigrams (see section, less than)
+    "see", "section", "than", "less", "only", "both", "made", "etc", "above",
+    "left", "right", "side", "sides", "single", "double", "plain", "fancy",
+    "equal", "round", "medium", "soft", "old", "new", "first", "second",
+    "complete", "manual", "automatic", "mounted", "posts", "track", "star",
+    "form", "series", "level", "class", "price", "grade", "stock", "sheets",
+    "squares", "square", "areas", "place", "pocket", "colors", "depth",
+    "density", "passes", "load",
+    # generic words too broad to help routing
+    "material", "materials", "building", "construction", "project",
+    "economy", "deluxe", "premium", "heavy", "light", "lights",
+    # measurement / spec units that only form fragments (mbh input, gpm psi)
+    "psi", "gpm", "mbh", "rpm", "fpm", "mph", "cfm", "kva", "kcmil", "kvar",
+    "gpd", "mgd", "bhp", "cycle", "amp", "amps", "watt", "watts", "volt",
+    "input", "output", "capacity", "discharge", "radius", "gal", "mils",
+    "thk", "diam", "dlh", "slh", "rib", "std", "fin",
 }
 
 # RSMeans phrases that prefix almost every branch and say nothing about scope.
@@ -58,7 +74,35 @@ BOILERPLATE = [
     "pointing",
 ]
 
+# Tokens that, inside a 2-word term, mark it as a measurement/spec fragment.
+# Only units/specs here — NOT generic words like "out"/"exit", which appear in
+# legitimate terms ("strip out", "exit device").
+_BLOCK_TOKENS = {
+    "psi", "gpm", "mbh", "rpm", "fpm", "mph", "cfm", "kva", "kcmil", "kvar",
+    "gpd", "mgd", "bhp", "amp", "amps", "watt", "watts", "volt", "input",
+    "output", "capacity", "discharge", "radius", "cycle", "passes", "load",
+}
+
+# Specific two-word fragments that are real words but carry no routing signal.
+_FRAGMENT_DENY = {
+    "lock out", "entry exit", "physical search", "search entry",
+    "same hole", "forms place", "tipped legs", "direct chute",
+    "thickness same", "left place", "drive extract", "than tall",
+}
+
 _WORD_RE = re.compile(r"[a-z][a-z\-']*[a-z]|[a-z]")
+
+
+def _is_noise(term):
+    """True for degenerate doubles, measurement fragments, and known junk."""
+    toks = term.split()
+    if len(toks) == 2 and toks[0] == toks[1]:        # "gal gal", "diam diam"
+        return True
+    if term in _FRAGMENT_DENY:
+        return True
+    if len(toks) == 2 and any(t in _BLOCK_TOKENS for t in toks):
+        return True
+    return False
 
 
 def _strip_boilerplate(name):
@@ -98,7 +142,8 @@ def _rank_terms(names, top_n=TOP_N):
     scored += [(w, c) for w, c in unigrams.items() if w not in covered]
     scored.sort(key=lambda x: (-x[1], x[0]))
 
-    return [term for term, _ in scored[:top_n]]
+    ranked = [term for term, _ in scored if not _is_noise(term)]
+    return ranked[:top_n]
 
 
 def _load_json(path, default):
