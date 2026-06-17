@@ -4,7 +4,7 @@ from playwright.async_api import async_playwright
 from app.db import init_db, save_to_db
 from app.utils import clean_number
 from app.navigator import (
-    select_level,
+    find_path,
     needs_clarification,
     build_clarification_response,
 )
@@ -182,6 +182,36 @@ async def parse_nodes(nodes):
 
 
 # =========================
+# NAVIGATE A CHOSEN PATH (VARIABLE DEPTH)
+# =========================
+async def navigate_path(page, path):
+    """
+    Click down the tree following the codes in `path`, to whatever depth the
+    leaf lives at (no hardcoded number of levels).
+
+    Returns True if every code was found and clicked, False otherwise.
+    """
+    nodes = await page.query_selector_all("#leftTreeMenu > ul > li")
+    siblings = await parse_nodes(nodes)
+
+    for code in path:
+        by_code = {n["code"]: n for n in siblings}
+        target = by_code.get(code)
+        if not target:
+            print(f"[navigate] code {code} not found in current level")
+            return False
+
+        await target["node"].click()
+        await page.wait_for_timeout(1200)
+
+        # Children of the node we just opened become the next level.
+        child_nodes = await target["node"].query_selector_all(":scope > ul > li")
+        siblings = await parse_nodes(child_nodes)
+
+    return True
+
+
+# =========================
 # MAIN
 # =========================
 async def start_browser(question):
@@ -216,65 +246,38 @@ async def start_browser(question):
 
         await wait_tree_ready(page)
 
-        path = []
-        route_meta = []  # routing diagnostics per level (confidence, fallback, ...)
+        # ===== DECIDE THE ROUTE (BEAM SEARCH WITH BACKTRACKING, OFFLINE) =====
+        # Explore tree.json with backtracking and pick the best full path to a
+        # leaf BEFORE touching the browser.
+        route = find_path(question)
 
-        # ================= LEVEL 1 =================
-        l1_nodes = await page.query_selector_all("#leftTreeMenu > ul > li")
-        l1 = await parse_nodes(l1_nodes)
-
-        c1, n1, m1 = select_level(question, path)
-        if needs_clarification(m1):
+        # Clarification gate: if not even the best route is trustworthy
+        # (fallback, or ambiguous + low confidence), stop and ask the user
+        # instead of navigating to a confidently wrong cost.
+        route_meta = {
+            "confidence": route["confidence"] if route else "low",
+            "clarify": (route["clarifications"][0]
+                        if route and route["clarifications"] else None),
+            "fallback": route["fallback_used"] if route else True,
+        }
+        if route is None or not route["path"] or needs_clarification(route_meta):
             await browser.close()
-            return build_clarification_response(question, path, m1)
-        path.append(c1)
-        route_meta.append(m1)
+            print("\n[BEAM] ruta no confiable -> se pide clarificación al usuario")
+            return build_clarification_response(
+                question, route["path"] if route else [], route_meta
+            )
 
-        await l1[[x["code"] for x in l1].index(c1)]["node"].click()
-        await page.wait_for_timeout(1200)
+        path = route["path"]
+        hops = route["hops"]
+        final_name = hops[-1]["name"]
 
-        # ================= LEVEL 2 =================
-        l2_nodes = await page.query_selector_all("#leftTreeMenu > ul > li > ul > li")
-        l2 = await parse_nodes(l2_nodes)
+        print("\nCHOSEN PATH:", " -> ".join(path))
+        print("ROUTE CONFIDENCE:", route["confidence"])
 
-        c2, n2, m2 = select_level(question, path)
-        if needs_clarification(m2):
-            await browser.close()
-            return build_clarification_response(question, path, m2)
-        path.append(c2)
-        route_meta.append(m2)
+        # ================= NAVIGATE THE CHOSEN PATH (VARIABLE DEPTH) =================
+        navigated = await navigate_path(page, path)
 
-        await l2[[x["code"] for x in l2].index(c2)]["node"].click()
-        await page.wait_for_timeout(1200)
-
-        # ================= LEVEL 3 =================
-        l3_nodes = await page.query_selector_all("#leftTreeMenu li li li")
-        l3 = await parse_nodes(l3_nodes)
-
-        c3, n3, m3 = select_level(question, path)
-        if needs_clarification(m3):
-            await browser.close()
-            return build_clarification_response(question, path, m3)
-        path.append(c3)
-        route_meta.append(m3)
-
-        await l3[[x["code"] for x in l3].index(c3)]["node"].click()
-        await page.wait_for_timeout(1200)
-
-        # ================= LEVEL 4 =================
-        l4_nodes = await page.query_selector_all("#leftTreeMenu li li li li")
-        l4 = await parse_nodes(l4_nodes)
-
-        c4, n4, m4 = select_level(question, path)
-        if needs_clarification(m4):
-            await browser.close()
-            return build_clarification_response(question, path, m4)
-        path.append(c4)
-        route_meta.append(m4)
-
-        await l4[[x["code"] for x in l4].index(c4)]["node"].click()
-
-        # 🔥 IMPORTANT: WAIT FOR REAL DATA
+        # IMPORTANT: WAIT FOR REAL DATA
         await wait_rsmeans_data(page)
 
         # ================= GRID =================
@@ -284,34 +287,23 @@ async def start_browser(question):
             save_to_db(
                 rows=rows,
                 question=question,
-                c3=c3,
-                c4=c4,
-                final_code=c4,
-                final_name=n4
+                c3=path[-2] if len(path) >= 2 else None,
+                c4=path[-1],
+                final_code=path[-1],
+                final_name=final_name,
             )
 
         await browser.close()
 
         print("\nFINAL PATH:", " -> ".join(path))
-        print(f"FINAL NODE: {c4} - {n4}")
-
-        # Overall confidence = the weakest hop; collect any clarify prompts and
-        # whether any level had to fall back to a guess.
-        order = {"high": 3, "medium": 2, "low": 1}
-        overall_confidence = min(
-            (m["confidence"] for m in route_meta),
-            key=lambda c: order.get(c, 1),
-            default="low",
-        )
-        clarifications = [m["clarify"] for m in route_meta if m.get("clarify")]
-        had_fallback = any(m.get("fallback") for m in route_meta)
+        print(f"FINAL NODE: {path[-1]} - {final_name}")
 
         return {
             "rows": rows,
             "path": path,
-            "final_code": c4,
-            "final_name": n4,
-            "confidence": overall_confidence,
-            "fallback_used": had_fallback,
-            "clarifications": clarifications,
+            "final_code": path[-1],
+            "final_name": final_name,
+            "confidence": route["confidence"],
+            "fallback_used": route["fallback_used"] or not navigated,
+            "clarifications": route["clarifications"],
         }

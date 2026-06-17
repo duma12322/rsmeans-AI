@@ -4,6 +4,10 @@ from app.knowledge_layer import formatting_guidance
 
 TREE = load_tree()
 
+# Penalty added to a hop's cost based on how sure the AI was about it. A low-confidence hop makes 
+# its whole branch more expensive, so beam search naturally prefers paths it was confident about.
+_CONFIDENCE_PENALTY = {"high": 0.0, "medium": 1.0, "low": 2.0}
+
 
 def needs_clarification(meta):
     """
@@ -119,4 +123,116 @@ def select_level(question, path):
         "clarify": clarify,
         "ranked": ranked,
         "fallback": False,
+    }
+
+
+# =========================
+# BEAM SEARCH (BACKTRACKING)
+# =========================
+def find_path(question, beam_width=3, max_depth=10):
+    """
+    Walk the tree to a leaf using beam search instead of a greedy per-level
+    pick, so a single bad guess high up no longer dooms the whole route.
+
+    We keep the `beam_width` cheapest partial paths alive at all times. Each
+    surviving path branches into the AI's top-ranked children; a hop's cost is
+    its rank position plus a confidence penalty. When a path reaches a leaf it
+    is finalized. The cheapest leaf path (by average cost per hop) wins — and
+    because several branches are explored in parallel, the search effectively
+    backtracks: a promising level-1 option that dead-ends is overtaken.
+
+    Runs entirely against tree.json (no browser), so exploring alternatives is
+    free; the browser only navigates the single chosen path afterwards.
+
+    Returns a dict with path / hops / confidence / clarifications /
+    fallback_used, or None if the tree is empty / unreachable.
+    """
+    # >>> Console indicator: the new (beam-search) routing decision starts here.
+    print("\n" + "=" * 70)
+    print(">>> NUEVA DECISION DE LA IA (beam search con backtracking) <<<")
+    print(f">>> Pregunta: {question!r}  | beam_width={beam_width}")
+    print("=" * 70)
+
+    # Each beam item: {"path", "cost", "hops"}.
+    beam = [{"path": [], "cost": 0.0, "hops": []}]
+    completed = []
+
+    for depth in range(max_depth):
+        expansions = []
+
+        for cand in beam:
+            options = format_options(get_children(cand["path"]))
+            here = " > ".join(cand["path"]) if cand["path"] else "ROOT"
+
+            # No children -> this path has reached a real leaf.
+            if not options:
+                print(f"[BEAM] depth {depth}: hoja alcanzada en [{here}] -> camino finalizado")
+                completed.append(cand)
+                continue
+
+            result = choose_node(question, options, cand["path"])
+            by_code = {o["code"]: o["name"] for o in options}
+
+            # If the AI returned nothing usable, fall back to the raw option
+            # order but flag every resulting hop as a guess.
+            is_fallback = not result["ranked"]
+            ranked = result["ranked"] or [o["code"] for o in options]
+            conf_penalty = _CONFIDENCE_PENALTY.get(result["confidence"], 1.0)
+
+            top = [c for c in ranked[:beam_width] if c in by_code]
+            print(f"[BEAM] depth {depth}: desde [{here}] | IA rankeó {top} "
+                  f"(conf={result['confidence']}{', FALLBACK' if is_fallback else ''}) "
+                  f"-> ramifica {len(top)}")
+
+            for rank, code in enumerate(top):
+                expansions.append({
+                    "path": cand["path"] + [code],
+                    "cost": cand["cost"] + rank + conf_penalty,
+                    "hops": cand["hops"] + [{
+                        "code": code,
+                        "name": by_code[code],
+                        "confidence": result["confidence"],
+                        "clarify": result["clarify"],
+                        "rank": rank,
+                        "fallback": is_fallback,
+                    }],
+                })
+
+        if not expansions:
+            break
+
+        expansions.sort(key=lambda c: c["cost"])
+        beam = expansions[:beam_width]
+        kept = [(" > ".join(c["path"]), round(c["cost"], 2)) for c in beam]
+        print(f"[BEAM] depth {depth}: caminos mantenidos (más baratos primero): {kept}")
+
+    # Any branches still active at max_depth are accepted as-is.
+    completed.extend(beam)
+    completed = [c for c in completed if c["path"]]
+    if not completed:
+        print("[BEAM] !! sin caminos validos -> None\n")
+        return None
+
+    # Compare leaves fairly regardless of depth: average cost per hop.
+    completed.sort(key=lambda c: c["cost"] / len(c["path"]))
+    best = completed[0]
+
+    order = {"high": 3, "medium": 2, "low": 1}
+    overall_confidence = min(
+        (h["confidence"] for h in best["hops"]),
+        key=lambda c: order.get(c, 1),
+        default="low",
+    )
+
+    print(f">>> DECISION FINAL: {' > '.join(best['path'])} "
+          f"| costo/salto={best['cost'] / len(best['path']):.2f} "
+          f"| confianza={overall_confidence}")
+    print("=" * 70 + "\n")
+
+    return {
+        "path": best["path"],
+        "hops": best["hops"],
+        "confidence": overall_confidence,
+        "clarifications": [h["clarify"] for h in best["hops"] if h.get("clarify")],
+        "fallback_used": any(h.get("fallback") for h in best["hops"]),
     }
