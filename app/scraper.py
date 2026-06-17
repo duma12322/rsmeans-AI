@@ -3,7 +3,11 @@ from playwright.async_api import async_playwright
 
 from app.db import init_db, save_to_db
 from app.utils import clean_number
-from app.navigator import select_level
+from app.navigator import (
+    select_level,
+    needs_clarification,
+    build_clarification_response,
+)
 from app.session import is_session_valid, save_session, SESSION_FILE
 
 
@@ -220,6 +224,9 @@ async def start_browser(question):
         l1 = await parse_nodes(l1_nodes)
 
         c1, n1, m1 = select_level(question, path)
+        if needs_clarification(m1):
+            await browser.close()
+            return build_clarification_response(question, path, m1)
         path.append(c1)
         route_meta.append(m1)
 
@@ -231,6 +238,9 @@ async def start_browser(question):
         l2 = await parse_nodes(l2_nodes)
 
         c2, n2, m2 = select_level(question, path)
+        if needs_clarification(m2):
+            await browser.close()
+            return build_clarification_response(question, path, m2)
         path.append(c2)
         route_meta.append(m2)
 
@@ -242,6 +252,9 @@ async def start_browser(question):
         l3 = await parse_nodes(l3_nodes)
 
         c3, n3, m3 = select_level(question, path)
+        if needs_clarification(m3):
+            await browser.close()
+            return build_clarification_response(question, path, m3)
         path.append(c3)
         route_meta.append(m3)
 
@@ -253,6 +266,9 @@ async def start_browser(question):
         l4 = await parse_nodes(l4_nodes)
 
         c4, n4, m4 = select_level(question, path)
+        if needs_clarification(m4):
+            await browser.close()
+            return build_clarification_response(question, path, m4)
         path.append(c4)
         route_meta.append(m4)
 

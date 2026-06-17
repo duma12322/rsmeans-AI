@@ -173,6 +173,38 @@ def get_division_context(division_code: str) -> str:
     return "\n".join(lines)
 
 
+def formatting_guidance() -> dict:
+    """
+    How a user should phrase a cost question. Returned to the user whenever a
+    request is too ambiguous to route, so they learn to ask correctly rather
+    than being handed a silent guess.
+    """
+    return {
+        "how_to_ask": (
+            "Describe a single line item as an action plus the material or "
+            "item, e.g. 'Cost to [install/replace/repair/paint/pour] a "
+            "[material or item] [size/type/location]'."
+        ),
+        "rules": [
+            "Always name the specific material or item (this matters most).",
+            "Ask about one line item per question — not several at once.",
+            "Add a qualifier when it helps: size, type, interior/exterior, residential/commercial.",
+            "Everyday words are fine — you do not need RSMeans codes.",
+        ],
+        "good_examples": [
+            "Cost to paint interior walls",
+            "Install a 200 amp electrical panel",
+            "Replace a residential water heater",
+            "Pour a 4 inch concrete slab",
+        ],
+        "avoid_examples": [
+            "Tell me the cost  (no item named)",
+            "How much will it cost?  (nothing to look up)",
+            "Paint walls and install outlets  (two trades at once)",
+        ],
+    }
+
+
 def build_root_context() -> str:
     """Return a compact reference of all divisions for level-1 selection."""
     lines = ["RSMeans Division Reference:"]
