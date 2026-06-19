@@ -46,13 +46,14 @@ def choose_node(question, options, path, timeout=30, retries=2):
     single guess. Returns a structured dict:
 
         {
-            "ranked":     [code, code, ...]   # best first, codes only
-            "confidence": "high" | "medium" | "low",
-            "clarify":    str | None          # a question to ask the user
+            "ranked":            [code, code, ...]  # best first, codes only
+            "confidence":        "high" | "medium" | "low",
+            "clarify_questions": [str, ...]         # follow-ups when ambiguous
         }
 
-    The caller decides what to do with low confidence or a clarify prompt;
-    this function never silently invents an answer.
+    On ambiguity we keep the ranked candidates AND return follow-up questions,
+    so the caller can present the likely matches and ask the user to refine —
+    never discarding the results just because there is ambiguity.
     """
     options_text = build_options_text(options)
     valid_codes = [o["code"] for o in options]
@@ -81,13 +82,17 @@ AVAILABLE CHILD NODES (you may ONLY choose from these codes):
 
 RULES:
 - Follow the RSMeans hierarchy strictly; do NOT jump branches.
-- Rank the children from most to least relevant to the user request.
+- ALWAYS rank the most relevant children (up to 3), most relevant first —
+  even when the request is ambiguous. Never return an empty ranking if any
+  option is plausibly relevant.
 - Use the domain knowledge to disambiguate natural-language terms.
-- If the request is ambiguous between the top options, set confidence "low"
-  and provide a short "clarify" question; otherwise set "clarify" to null.
+- If the request could reasonably fall into several of the options, set
+  confidence "low" or "medium" and provide 1-3 short "clarify_questions" that
+  would let the user pinpoint the right one. If the best option is clear, set
+  confidence "high" and return an empty "clarify_questions" list.
 
 Return ONLY a JSON object, no prose, in exactly this shape:
-{{"ranked": ["<code>", "<code>"], "confidence": "high|medium|low", "clarify": null}}
+{{"ranked": ["<code>", "<code>"], "confidence": "high|medium|low", "clarify_questions": ["<question>"]}}
 
 Every code in "ranked" MUST be one of the available codes above.
 """
@@ -120,7 +125,7 @@ Every code in "ranked" MUST be one of the available codes above.
 
     # All attempts exhausted: signal failure, do NOT fabricate a choice.
     print(f"[tree_ai] AI unavailable after retries: {last_error}")
-    return {"ranked": [], "confidence": "low", "clarify": None}
+    return {"ranked": [], "confidence": "low", "clarify_questions": []}
 
 
 # =========================
@@ -149,13 +154,19 @@ def _parse_ranking(content, valid_codes):
         # Last-resort: treat the raw content as a single "CODE - name" line.
         code = content.strip().split(" - ")[0].strip()
         ranked = [code] if code in valid_codes else []
-        return {"ranked": ranked, "confidence": "low", "clarify": None}
+        return {"ranked": ranked, "confidence": "low", "clarify_questions": []}
 
     # Keep only codes that actually exist as options, preserving order.
     ranked = [c for c in data.get("ranked", []) if c in valid_codes]
     confidence = data.get("confidence", "medium")
     if confidence not in ("high", "medium", "low"):
         confidence = "medium"
-    clarify = data.get("clarify") or None
 
-    return {"ranked": ranked, "confidence": confidence, "clarify": clarify}
+    # Accept the list form, or a single legacy "clarify" string.
+    clarify_questions = data.get("clarify_questions")
+    if not isinstance(clarify_questions, list):
+        single = data.get("clarify_questions")
+        clarify_questions = [single] if single else []
+    clarify_questions = [q.strip() for q in clarify_questions if isinstance(q, str) and q.strip()]
+
+    return {"ranked": ranked, "confidence": confidence, "clarify_questions": clarify_questions}

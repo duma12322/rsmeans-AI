@@ -11,29 +11,54 @@ _CONFIDENCE_PENALTY = {"high": 0.0, "medium": 1.0, "low": 2.0}
 
 def needs_clarification(meta):
     """
-    True when we must STOP and ask the user instead of navigating on a guess.
+    True when we must PAUSE and ask the user instead of navigating further.
 
-    We refuse to proceed when the AI either had no usable answer (fallback) or
-    explicitly flagged the request as ambiguous (a clarify question at low
-    confidence). In those cases guessing a branch produces a confidently wrong
-    cost, which is worse than asking the user to rephrase.
+    This happens when the AI flagged the request as ambiguous (it returned
+    follow-up questions) or had no usable candidate at all. We do not navigate
+    on, but — importantly — we still keep the candidate matches we found.
     """
-    if meta.get("fallback"):
-        return True
-    return bool(meta.get("clarify")) and meta.get("confidence") == "low"
+    return bool(meta.get("ambiguous"))
 
 
 def build_clarification_response(question, path, meta):
-    """Structured response telling the user how to ask, instead of a cost."""
+    """
+    Ambiguity response that PRESENTS the candidate matches and asks follow-up
+    questions, rather than discarding the results. Follows the required format.
+    """
+    candidates = meta.get("candidates", [])
+    questions = meta.get("clarify_questions", [])
+    best = candidates[0] if (candidates and meta.get("confidence") == "high") else None
+
+    # Build the human-readable message in the required format.
+    lines = [
+        "Your question appears to be ambiguous and could fall into several "
+        "categories within RSMeans. To help you find the correct option, "
+        "I found the following possible results:",
+        "",
+    ]
+    for c in candidates:
+        tag = "  (best match)" if best and c["code"] == best["code"] else ""
+        lines.append(f"* {c['code']} - {c['name']}{tag}")
+
+    if questions:
+        lines += ["", "To determine which is correct, I need to ask a few additional questions:", ""]
+        for i, q in enumerate(questions, 1):
+            lines.append(f"{i}. {q}")
+
+    lines += [
+        "",
+        "While you answer these questions, the results above represent the "
+        "most likely matches found in RSMeans.",
+    ]
+
     return {
         "status": "needs_clarification",
         "question": question,
-        "message": (
-            "Your request is too ambiguous to look up a cost. Please rephrase "
-            "it more specifically — name the exact item or material and a "
-            "single action."
-        ),
-        "clarify": meta.get("clarify"),
+        "message": "\n".join(lines),
+        "candidates": candidates,
+        "best_match": best,
+        "clarify_questions": questions,
+        "confidence": meta.get("confidence"),
         "how_to_ask": formatting_guidance(),
         "path_so_far": path,
     }
@@ -65,7 +90,7 @@ def select_level(question, path):
     Returns (code, name, meta) where meta carries the routing diagnostics:
         {
             "confidence": "high" | "medium" | "low",
-            "clarify":    str | None,   # question to ask when ambiguous
+            "clarify_question":    str | None,   # question to ask when ambiguous
             "ranked":     [code, ...],  # full ranking the AI returned
             "fallback":   bool,         # True if we had to guess
         }
@@ -87,43 +112,50 @@ def select_level(question, path):
         print("NO OPTIONS -> NEEDS CLARIFICATION")
         print("=" * 80)
         return None, None, {
-            "confidence": "low", "clarify": None, "ranked": [], "fallback": True
+            "confidence": "low", "clarify_questions": [], "ranked": [],
+            "candidates": [], "ambiguous": True,
         }
 
     result = choose_node(question, options, path)
     ranked = result["ranked"]
     confidence = result["confidence"]
-    clarify = result["clarify"]
+    clarify_questions = result["clarify_questions"]
 
     print("AI RANKED:", ranked or "(none)")
     print("CONFIDENCE:", confidence)
-    if clarify:
-        print("CLARIFY:", clarify)
+    if clarify_questions:
+        print("CLARIFY:", clarify_questions)
 
     by_code = {o["code"]: o["name"] for o in options}
-    best = next((c for c in ranked if c in by_code), None)
+    # Candidate matches we found, names attached, top 3 — kept even if ambiguous.
+    candidates = [
+        {"code": c, "name": by_code[c]} for c in ranked if c in by_code
+    ][:3]
 
-    # Ambiguous request: the AI is unsure and is asking the user to clarify.
-    # Do NOT select anything — let the caller stop and prompt the user.
-    if best is None or (confidence == "low" and clarify):
-        print("AMBIGUOUS -> SELECTING NOTHING, NEEDS CLARIFICATION")
-        print("=" * 80)
-        return None, None, {
-            "confidence": confidence,
-            "clarify": clarify,
-            "ranked": ranked,
-            "fallback": True,
-        }
+    # Ambiguous = the AI explicitly asked follow-up questions, OR we found no
+    # usable candidate at all. We PAUSE but keep the candidates. Medium
+    # confidence without follow-up questions still navigates (best effort).
+    ambiguous = bool(clarify_questions) or not candidates
 
-    # Confident enough: take the best valid candidate.
-    print(f"SELECTED: {best} - {by_code[best]}")
-    print("=" * 80)
-    return best, by_code[best], {
+    meta = {
         "confidence": confidence,
-        "clarify": clarify,
+        "clarify_questions": clarify_questions,
         "ranked": ranked,
-        "fallback": False,
+        "candidates": candidates,
+        "ambiguous": ambiguous,
     }
+
+    if ambiguous:
+        print(f"AMBIGUOUS -> PRESENTING {len(candidates)} CANDIDATES + "
+              f"{len(clarify_questions)} QUESTIONS, NOT NAVIGATING")
+        print("=" * 80)
+        return None, None, meta
+
+    # Confident single match: navigate into it.
+    best = candidates[0]
+    print(f"SELECTED: {best['code']} - {best['name']}")
+    print("=" * 80)
+    return best["code"], best["name"], meta
 
 
 # =========================
@@ -157,6 +189,13 @@ def find_path(question, beam_width=3, max_depth=10):
     beam = [{"path": [], "cost": 0.0, "hops": []}]
     completed = []
 
+    # Captured from the very first (division-level) decision so we can present
+    # the candidate divisions and follow-up questions if the request turns out
+    # to be ambiguous at the top — the most common and most useful case.
+    root_candidates = []
+    root_questions = []
+    root_fallback = False
+
     for depth in range(max_depth):
         expansions = []
 
@@ -184,6 +223,12 @@ def find_path(question, beam_width=3, max_depth=10):
                   f"(conf={result['confidence']}{', FALLBACK' if is_fallback else ''}) "
                   f"-> ramifica {len(top)}")
 
+            # Capture the root-level picture for a possible clarification reply.
+            if cand["path"] == []:
+                root_candidates = [{"code": c, "name": by_code[c]} for c in top]
+                root_questions = result["clarify_questions"]
+                root_fallback = is_fallback
+
             for rank, code in enumerate(top):
                 expansions.append({
                     "path": cand["path"] + [code],
@@ -192,7 +237,7 @@ def find_path(question, beam_width=3, max_depth=10):
                         "code": code,
                         "name": by_code[code],
                         "confidence": result["confidence"],
-                        "clarify": result["clarify"],
+                        "clarify_questions": result["clarify_questions"],
                         "rank": rank,
                         "fallback": is_fallback,
                     }],
@@ -211,7 +256,11 @@ def find_path(question, beam_width=3, max_depth=10):
     completed = [c for c in completed if c["path"]]
     if not completed:
         print("[BEAM] !! sin caminos validos -> None\n")
-        return None
+        return {
+            "path": [], "hops": [], "confidence": "low",
+            "candidates": root_candidates, "clarify_questions": root_questions,
+            "fallback_used": True, "ambiguous": True,
+        }
 
     # Compare leaves fairly regardless of depth: average cost per hop.
     completed.sort(key=lambda c: c["cost"] / len(c["path"]))
@@ -224,15 +273,21 @@ def find_path(question, beam_width=3, max_depth=10):
         default="low",
     )
 
+    # The route is ambiguous (present candidates + ask) when the top division
+    # decision was a guess or the AI asked follow-up questions there.
+    ambiguous = root_fallback or bool(root_questions)
+
     print(f">>> DECISION FINAL: {' > '.join(best['path'])} "
           f"| costo/salto={best['cost'] / len(best['path']):.2f} "
-          f"| confianza={overall_confidence}")
+          f"| confianza={overall_confidence} | ambiguo={ambiguous}")
     print("=" * 70 + "\n")
 
     return {
         "path": best["path"],
         "hops": best["hops"],
         "confidence": overall_confidence,
-        "clarifications": [h["clarify"] for h in best["hops"] if h.get("clarify")],
+        "candidates": root_candidates,
+        "clarify_questions": root_questions,
         "fallback_used": any(h.get("fallback") for h in best["hops"]),
+        "ambiguous": ambiguous,
     }

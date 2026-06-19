@@ -34,26 +34,42 @@ CASES = [
 
 
 def main():
-    passed = 0
-    failures = []
+    confident_correct = 0   # routed straight to the right division
+    top_correct = 0         # right division was the AI's #1 candidate (even if it paused)
+    wrong = []
 
     for question, expected in CASES:
         code, name, meta = select_level(question, [])
-        ok = code == expected
-        passed += ok
-        flag = "PASS" if ok else "FAIL"
-        print(f"[{flag}] {question!r} -> {code} (expected {expected}) "
-              f"conf={meta['confidence']} fallback={meta['fallback']}")
-        if not ok:
-            failures.append((question, expected, code))
+        top = meta["candidates"][0]["code"] if meta["candidates"] else None
+
+        is_confident = code == expected
+        is_top = top == expected
+        confident_correct += is_confident
+        top_correct += is_top
+
+        if is_confident:
+            flag = "ROUTED"
+        elif is_top:
+            flag = "PAUSED"   # correct brain, asked a follow-up anyway
+        else:
+            flag = "WRONG"
+            wrong.append((question, expected, top))
+
+        print(f"[{flag:6}] {question!r} -> routed={code} top={top} "
+              f"(expected {expected}) conf={meta['confidence']}")
 
     total = len(CASES)
     print("\n" + "=" * 60)
-    print(f"ACCURACY: {passed}/{total} ({100 * passed / total:.0f}%)")
-    if failures:
-        print("\nFailures:")
-        for q, exp, got in failures:
-            print(f"  {q!r}: expected {exp}, got {got}")
+    print(f"ROUTED confidently & correct: {confident_correct}/{total} "
+          f"({100 * confident_correct / total:.0f}%)")
+    print(f"TOP candidate correct (brain): {top_correct}/{total} "
+          f"({100 * top_correct / total:.0f}%)")
+    if wrong:
+        print("\nActually wrong (top candidate != expected):")
+        for q, exp, got in wrong:
+            print(f"  {q!r}: expected {exp}, top was {got}")
+    else:
+        print("\nNo truly wrong routes — every miss was just an over-cautious pause.")
 
 
 if __name__ == "__main__":

@@ -251,18 +251,19 @@ async def start_browser(question):
         # leaf BEFORE touching the browser.
         route = find_path(question)
 
-        # Clarification gate: if not even the best route is trustworthy
-        # (fallback, or ambiguous + low confidence), stop and ask the user
-        # instead of navigating to a confidently wrong cost.
+        # Clarification gate: if the best route is ambiguous (the AI asked
+        # follow-up questions at the division level, or had to guess), stop and
+        # PRESENT the candidate matches plus the questions instead of navigating
+        # to a confidently wrong cost.
         route_meta = {
             "confidence": route["confidence"] if route else "low",
-            "clarify": (route["clarifications"][0]
-                        if route and route["clarifications"] else None),
-            "fallback": route["fallback_used"] if route else True,
+            "candidates": route["candidates"] if route else [],
+            "clarify_questions": route["clarify_questions"] if route else [],
+            "ambiguous": route["ambiguous"] if route else True,
         }
         if route is None or not route["path"] or needs_clarification(route_meta):
             await browser.close()
-            print("\n[BEAM] ruta no confiable -> se pide clarificación al usuario")
+            print("\n[BEAM] ruta no confiable -> se presentan candidatos y preguntas")
             return build_clarification_response(
                 question, route["path"] if route else [], route_meta
             )
@@ -305,5 +306,5 @@ async def start_browser(question):
             "final_name": final_name,
             "confidence": route["confidence"],
             "fallback_used": route["fallback_used"] or not navigated,
-            "clarifications": route["clarifications"],
+            "clarify_questions": route.get("clarify_questions", []),
         }
