@@ -15,9 +15,15 @@ def init_db():
             c4 TEXT,
             final_code TEXT,
             final_name TEXT,
+            line_number TEXT,
             data TEXT
         )
     """)
+
+    # Add line_number to pre-existing tables (older DBs created before this column).
+    cols = [row[1] for row in cur.execute("PRAGMA table_info(results)").fetchall()]
+    if "line_number" not in cols:
+        cur.execute("ALTER TABLE results ADD COLUMN line_number TEXT")
 
     conn.commit()
     conn.close()
@@ -30,15 +36,16 @@ def save_to_db(rows, question, c3, c4, final_code, final_name):
     for r in rows:
         cur.execute("""
             INSERT INTO results (
-                question, c3, c4, final_code, final_name, data
+                question, c3, c4, final_code, final_name, line_number, data
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             question,
             c3,
             c4,
             final_code,
             final_name,
+            r.get("line_number"),
             str(r)
         ))
 

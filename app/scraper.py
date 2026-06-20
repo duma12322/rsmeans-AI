@@ -169,6 +169,59 @@ async def scrape_grid(page):
 
 
 # =========================
+# MATCH A SCRAPED ROW TO AN EXPLICIT LINE NUMBER
+# =========================
+def match_scraped_line(rows, code):
+    """
+    Find the scraped grid row whose visible Line Number matches the requested
+    RSMeans code, for a direct code lookup. Matching is digits-only (so
+    "265613102870", "26 56 13. 10 2870", etc. all match the same row). Prefers
+    an exact line, otherwise the first line that starts with the code (a short /
+    section-level code). Returns the row dict (line_number, description, costs)
+    or None.
+    """
+    if not rows or not code:
+        return None
+
+    code = "".join(ch for ch in str(code) if ch.isdigit())
+    if not code:
+        return None
+
+    prefix_hit = None
+    for r in rows:
+        line = "".join(ch for ch in str(r.get("line_number", "")) if ch.isdigit())
+        if not line:
+            continue
+        if line == code:
+            return r
+        if prefix_hit is None and line.startswith(code):
+            prefix_hit = r
+    return prefix_hit
+
+
+def filter_rows_by_code(rows, code):
+    """
+    Keep only the rows whose visible Line Number starts with the requested code
+    (digits-only). A full 12-digit line number returns a single row; a shorter
+    section code (e.g. "265613.10") is a prefix of every line in its grid, so it
+    returns them all. When no code was given, or nothing matches, return `rows`
+    unchanged so we never hand back an empty result.
+    """
+    if not rows or not code:
+        return rows
+
+    code = "".join(ch for ch in str(code) if ch.isdigit())
+    if not code:
+        return rows
+
+    filtered = [
+        r for r in rows
+        if "".join(ch for ch in str(r.get("line_number", "")) if ch.isdigit()).startswith(code)
+    ]
+    return filtered or rows
+
+
+# =========================
 # PARSE TREE
 # =========================
 async def parse_nodes(nodes):
@@ -305,11 +358,32 @@ async def start_browser(question):
 
         await browser.close()
 
+        # If the user asked for an explicit code (direct code lookup), narrow the
+        # rows we RETURN to exactly what was asked. We always SAVE the full grid
+        # above (richer knowledge base); only the response is focused:
+        #   - full 12-digit line number -> just that one line
+        #   - shorter section code (e.g. 265613.10) -> all lines under it
+        # The whole grid is kept under `all_rows` so nothing is lost.
+        requested_code = route.get("requested_code")
+        all_rows = rows
+        rows = filter_rows_by_code(all_rows, requested_code)
+
+        # The single best (exact) line, for a one-shot "line number + costs" answer.
+        matched_line = match_scraped_line(all_rows, route.get("matched_line"))
+
         print("\nFINAL PATH:", " -> ".join(path))
         print(f"FINAL NODE: {path[-1]} - {final_name}")
+        if requested_code:
+            print(f"CODIGO PEDIDO: {requested_code} -> devuelvo {len(rows)} "
+                  f"linea(s) de {len(all_rows)} en la seccion")
+        if matched_line:
+            print(f"LINEA EXACTA: {matched_line['line_number']} - "
+                  f"{matched_line['description']} | "
+                  f"bare={matched_line['bare_total']} O&P={matched_line['total_op']}")
 
         return {
             "rows": rows,
+            "matched_line": matched_line,
             "path": path,
             "final_code": path[-1],
             "final_name": final_name,

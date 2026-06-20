@@ -284,7 +284,12 @@ def find_path(question, beam_width=3, max_depth=10):
             else:
                 print(f">>> Item: {hit['description']}")
             print("=" * 70 + "\n")
-            return _route_from_leaf(hit)
+            route = _route_from_leaf(hit)
+            # Remember the exact digits the user typed so the scraper can return
+            # ONLY the line(s) under this leaf that start with that code: a full
+            # 12-digit code -> one line; a shorter section code -> all its lines.
+            route["requested_code"] = code
+            return route
 
         residual = _residual_text(question, code)
         if residual:
