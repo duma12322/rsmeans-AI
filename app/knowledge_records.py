@@ -15,6 +15,7 @@ used purely to GUIDE routing and the user.
 """
 import json
 import os
+import re
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROUTE_ITEMS_PATH = os.path.join(BASE_DIR, "route_items.json")
@@ -109,6 +110,96 @@ def find_by_line(code):
                         "line": it["line"], "description": it["description"],
                     }
     return prefix_hit
+
+
+_SEARCH_STOPWORDS = {
+    "the", "of", "for", "a", "an", "to", "and", "or", "with", "in", "on", "at",
+    "by", "cost", "costs", "price", "install", "installation", "replace",
+    "repair", "per", "each", "new", "used", "type", "size",
+}
+
+
+def _stem(word):
+    """Very light normalization so 'excavations' matches 'excavation': drop a
+    trailing plural 's' (and 'es') on words long enough for it to be safe."""
+    if len(word) > 4 and word.endswith("es"):
+        return word[:-2]
+    if len(word) > 3 and word.endswith("s"):
+        return word[:-1]
+    return word
+
+
+def _token_hits(tokens, words):
+    """
+    How many query `tokens` are present in a description's `words` set, tolerant
+    of plurals and minor variants: exact match, stem match, or (for longer
+    tokens) one being a substring of the other.
+    """
+    word_stems = {_stem(w) for w in words}
+    hits = 0
+    for t in tokens:
+        if t in words or _stem(t) in word_stems:
+            hits += 1
+        # Substring fallback only between LONG words, so a short description
+        # token (e.g. "c" from "C.Y.") can't match inside a query word.
+        elif len(t) >= 4 and any(len(w) >= 4 and (t in w or w in t) for w in words):
+            hits += 1
+    return hits
+
+
+def search_items(query, within_path=None, limit=20):
+    """
+    Rank catalog item descriptions by a literal text match to `query` — a fast,
+    AI-free lookup over route_items.json (like a scored Ctrl+F). Best first.
+
+    score = fraction of the query's meaningful words present in the description
+    (0..1), PLUS 1.0 when the whole query phrase appears as a substring. So an
+    exact-wording hit scores ~2.0 and a partial word overlap scores <1.0.
+
+    `within_path` restricts the search to one branch (used while a conversation
+    has a locked path). Returns dicts:
+        {line, description, path, name, division, leaf_key, score}
+    """
+    tokens = [
+        t for t in re.findall(r"[a-z0-9]+", str(query).lower())
+        if len(t) >= 2 and t not in _SEARCH_STOPWORDS
+    ]
+    if not tokens:
+        return []
+    phrase = " ".join(tokens)
+
+    data = _load()
+    prefix = " > ".join(within_path) if within_path else None
+
+    results = []
+    for division, leaves in data.items():
+        if within_path and division != within_path[0]:
+            continue
+        for leaf_key, leaf in leaves.items():
+            if prefix and not (leaf_key == prefix or leaf_key.startswith(prefix + " > ")):
+                continue
+            for it in leaf.get("items", []):
+                desc_raw = it.get("description", "")
+                desc = desc_raw.lower()
+                words = set(re.findall(r"[a-z0-9]+", desc))
+                hits = _token_hits(tokens, words)
+                if not hits:
+                    continue
+                score = hits / len(tokens)
+                if phrase in desc:
+                    score += 1.0
+                results.append({
+                    "line": it.get("line", ""),
+                    "description": desc_raw,
+                    "path": leaf["path"],
+                    "name": leaf["name"],
+                    "division": division,
+                    "leaf_key": leaf_key,
+                    "score": round(score, 3),
+                })
+
+    results.sort(key=lambda r: (-r["score"], len(r["description"])))
+    return results[:limit]
 
 
 def resolve_code(code):
