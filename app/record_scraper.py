@@ -9,7 +9,15 @@ than the branch titles, and feeds app/keyword_extractor.py.
 
 Output:
     division_records.json           {division_code: [description, ...]}
+    route_items.json                {division: {leaf_path: {path, name, items}}}
+                                     where items = [{"line": ..., "description": ...}]
     division_records.progress.json  {"done": [leaf path strings]}  (for resume)
+
+`route_items.json` is the structured knowledge base used to GUIDE routing and
+the user: it keeps each leaf's exact tree path plus, per line-item, its RSMeans
+line number and description (no prices — those go stale and are always fetched
+live). `division_records.json` stays as the flat per-division vocabulary that
+feeds app/keyword_extractor.py.
 
 The full 24-division scrape is long, so progress is flushed after every leaf and
 already-scraped leaves are skipped on a re-run.
@@ -36,6 +44,7 @@ from app.keyword_extractor import generate as generate_keywords
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RECORDS_PATH = os.path.join(BASE_DIR, "division_records.json")
+ROUTE_ITEMS_PATH = os.path.join(BASE_DIR, "route_items.json")
 PROGRESS_PATH = os.path.join(BASE_DIR, "division_records.progress.json")
 
 
@@ -51,24 +60,59 @@ def _load_json(path, default):
 
 
 class Store:
-    """Accumulates descriptions per division and flushes after every leaf."""
+    """Accumulates two outputs and flushes after every leaf:
+
+    - records:     flat {division: [description, ...]} for the keyword extractor.
+    - route_items: structured {leaf_path: {path, name, division, items}} — the
+      guidance/knowledge base that maps every exact tree route to its real
+      line-item descriptions.
+    """
 
     def __init__(self):
         self.records = _load_json(RECORDS_PATH, {})
+        self.route_items = _load_json(ROUTE_ITEMS_PATH, {})
         self.done = set(_load_json(PROGRESS_PATH, {}).get("done", []))
 
     def already_done(self, leaf_key):
-        return leaf_key in self.done
+        # A leaf only counts as done once it exists in the structured map too.
+        # This way an existing progress file from the old (descriptions-only)
+        # scraper does NOT block building route_items.json — leaves missing
+        # from it are re-scraped, so the knowledge base self-heals on a re-run.
+        division = leaf_key.split(" > ", 1)[0]
+        return leaf_key in self.done and leaf_key in self.route_items.get(division, {})
 
-    def add(self, division, leaf_key, descriptions):
-        bucket = self.records.setdefault(division, [])
-        bucket.extend(descriptions)
+    def add(self, division, path, name, items):
+        """`items` is a list of {"line": <line number>, "description": <text>}."""
+        leaf_key = " > ".join(path)
+
+        # Flat per-division vocabulary (feeds keyword extraction) — text only.
+        self.records.setdefault(division, []).extend(it["description"] for it in items)
+
+        # Structured route -> items, grouped UNDER the division (the chapter) so
+        # the knowledge base reads chapter-by-chapter. Dedupe within the leaf by
+        # (line, text), preserving order, so it stays clean if the grid repeats
+        # a row.
+        seen = set()
+        deduped = []
+        for it in items:
+            key = (it.get("line", ""), it["description"])
+            if key not in seen:
+                seen.add(key)
+                deduped.append({"line": it.get("line", ""), "description": it["description"]})
+        self.route_items.setdefault(division, {})[leaf_key] = {
+            "path": path,
+            "name": name,
+            "items": deduped,
+        }
+
         self.done.add(leaf_key)
         self._flush()
 
     def _flush(self):
         with open(RECORDS_PATH, "w", encoding="utf-8") as f:
             json.dump(self.records, f, indent=2, ensure_ascii=False)
+        with open(ROUTE_ITEMS_PATH, "w", encoding="utf-8") as f:
+            json.dump(self.route_items, f, indent=2, ensure_ascii=False)
         with open(PROGRESS_PATH, "w", encoding="utf-8") as f:
             json.dump({"done": sorted(self.done)}, f, indent=2, ensure_ascii=False)
 
@@ -84,22 +128,26 @@ async def _expand(node):
         pass
 
 
-async def _scrape_leaf(page, division, leaf_key, store):
+async def _scrape_leaf(page, division, path, name, store):
     """A node with no children: its grid holds the actual line-items."""
+    leaf_key = " > ".join(path)
     try:
         await wait_rsmeans_data(page)
         rows = await scrape_grid(page)
     except Exception as e:
         print(f"  [leaf] {leaf_key}: no grid data ({e})")
-        store.add(division, leaf_key, [])
+        store.add(division, path, name, [])
         return
 
-    descriptions = [r["description"] for r in rows if r.get("description")]
-    print(f"  [leaf] {leaf_key}: {len(descriptions)} records")
-    store.add(division, leaf_key, descriptions)
+    items = [
+        {"line": r.get("line_number", ""), "description": r["description"]}
+        for r in rows if r.get("description")
+    ]
+    print(f"  [leaf] {leaf_key}: {len(items)} records")
+    store.add(division, path, name, items)
 
 
-async def _dfs(page, li, path, division, store):
+async def _dfs(page, li, path, name, division, store):
     """Depth-first walk of one division's subtree, scraping every leaf grid."""
     await _expand(li)
 
@@ -110,12 +158,12 @@ async def _dfs(page, li, path, division, store):
         if store.already_done(leaf_key):
             print(f"  [skip] {leaf_key} (already scraped)")
             return
-        await _scrape_leaf(page, division, leaf_key, store)
+        await _scrape_leaf(page, division, path, name, store)
         return
 
     parsed = await parse_nodes(children)
     for c in parsed:
-        await _dfs(page, c["node"], path + [c["code"]], division, store)
+        await _dfs(page, c["node"], path + [c["code"]], c["name"], division, store)
 
 
 async def _login_and_open_tree(page, context):
@@ -161,7 +209,7 @@ async def _scrape_one_division(code, store):
             return False
 
         print(f"\n{'=' * 60}\nDIVISION {code} - {target['name']}\n{'=' * 60}")
-        await _dfs(page, target["node"], [code], code, store)
+        await _dfs(page, target["node"], [code], target["name"], code, store)
 
         await browser.close()
         return True

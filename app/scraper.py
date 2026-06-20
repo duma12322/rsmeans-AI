@@ -119,6 +119,26 @@ def find_col(col_map, keyword):
 # =========================
 # SCRAPE GRID (ROBUST)
 # =========================
+# jqGrid identifies every column with aria-describedby="grid_<Column>". Selecting
+# cells by that id is robust to column reordering and hidden columns, unlike the
+# old positional indexes. Note: grid_UnitLineNumber is the VISIBLE line number
+# (grid_LineNumber is a separate, hidden, empty column).
+_GRID_COLS = {
+    "line_number": "grid_UnitLineNumber",
+    "description": "grid_Description",
+    "unit": "grid_UnitOfMeasureCode",
+    "bare_total": "grid_Total",
+    "total_op": "grid_TotalOP",
+}
+
+
+async def _col_value(row, col_id):
+    cell = await row.query_selector(f'td[aria-describedby="{col_id}"]')
+    if not cell:
+        return ""
+    return normalize(await get_cell_value(cell))
+
+
 async def scrape_grid(page):
 
     await wait_rsmeans_data(page)
@@ -131,29 +151,18 @@ async def scrape_grid(page):
 
     for row in rows:
 
-        cells = await row.query_selector_all("td")
+        description = await _col_value(row, _GRID_COLS["description"])
 
-        if len(cells) < 23:
+        # Rows without a description are grid chrome, not line-items.
+        if not description:
             continue
 
-        description = normalize(
-            await get_cell_value(cells[6])
-        )
-
-        unit = normalize(
-            await get_cell_value(cells[8])
-        )
-
-        # RSMeans REAL
-        raw_bare_total = await get_cell_value(cells[18])
-
-        raw_total_op = await get_cell_value(cells[21])
-
         data.append({
+            "line_number": await _col_value(row, _GRID_COLS["line_number"]),
             "description": description,
-            "unit": unit,
-            "bare_total": clean_number(raw_bare_total),
-            "total_op": clean_number(raw_total_op)
+            "unit": await _col_value(row, _GRID_COLS["unit"]),
+            "bare_total": clean_number(await _col_value(row, _GRID_COLS["bare_total"])),
+            "total_op": clean_number(await _col_value(row, _GRID_COLS["total_op"])),
         })
 
     return data
