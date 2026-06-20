@@ -4,6 +4,7 @@ import requests
 
 from app.config import DEEPSEEK_API_KEY, MARCE_API_URL
 from app.knowledge_layer import build_root_context, get_division_context
+from app.knowledge_records import options_preview
 
 
 # =========================
@@ -60,6 +61,19 @@ def choose_node(question, options, path, timeout=30, retries=2):
     knowledge = _knowledge_context(path)
     path_str = " > ".join(path) if path else "ROOT"
 
+    # Real catalog content beneath each option (from route_items.json). This is
+    # the strongest disambiguation signal: it shows what each branch ACTUALLY
+    # contains, not just its title. Empty at root, where we rely on keywords.
+    items_block = ""
+    preview = options_preview(path, options)
+    if preview:
+        items_block = (
+            "\nACTUAL LINE-ITEMS UNDER EACH OPTION (real RSMeans rows found "
+            "beneath each code — use these to match the request precisely and to "
+            "write specific clarify_questions):\n"
+            f"{preview}\n"
+        )
+
     prompt = f"""
 You are a STRICT RSMeans navigation engine.
 
@@ -78,14 +92,16 @@ DOMAIN KNOWLEDGE (use this to map natural language to the right area):
 
 AVAILABLE CHILD NODES (you may ONLY choose from these codes):
 {options_text}
-========================
+{items_block}========================
 
 RULES:
 - Follow the RSMeans hierarchy strictly; do NOT jump branches.
 - ALWAYS rank the most relevant children (up to 3), most relevant first —
   even when the request is ambiguous. Never return an empty ranking if any
   option is plausibly relevant.
-- Use the domain knowledge to disambiguate natural-language terms.
+- Use the domain knowledge AND the actual line-items above to disambiguate
+  natural-language terms; prefer the branch whose real items best match the
+  request.
 - If the request could reasonably fall into several of the options, set
   confidence "low" or "medium" and provide 1-3 short "clarify_questions" that
   would let the user pinpoint the right one. If the best option is clear, set
@@ -165,7 +181,7 @@ def _parse_ranking(content, valid_codes):
     # Accept the list form, or a single legacy "clarify" string.
     clarify_questions = data.get("clarify_questions")
     if not isinstance(clarify_questions, list):
-        single = data.get("clarify_questions")
+        single = data.get("clarify") or clarify_questions
         clarify_questions = [single] if single else []
     clarify_questions = [q.strip() for q in clarify_questions if isinstance(q, str) and q.strip()]
 
