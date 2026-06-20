@@ -21,3 +21,9 @@ session.json
 
 # Logs
 *.log
+
+division_records.json
+division_records.progress.json
+
+# Claude
+CLAUDE.md
