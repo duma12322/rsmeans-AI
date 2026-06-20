@@ -1,6 +1,9 @@
+import re
+
 from app.tree_loader import load_tree
 from app.tree_ai import choose_node
 from app.knowledge_layer import formatting_guidance
+from app.knowledge_records import resolve_code
 
 TREE = load_tree()
 
@@ -159,6 +162,90 @@ def select_level(question, path):
 
 
 # =========================
+# DIRECT CODE LOOKUP
+# =========================
+def _extract_code(question):
+    """
+    Pull an explicit RSMeans line number out of the question, if any.
+
+    Returns the digits-only code when the question contains a run of 6+ digits
+    (optionally split by spaces/dots/dashes, as users paste them), else None. A
+    6-digit floor avoids catching quantities like "200 amp" or "4 inch".
+    """
+    runs = re.findall(r"\d[\d.\s\-]{4,}\d", question)
+    if not runs:
+        return None
+    best = max(runs, key=lambda s: sum(c.isdigit() for c in s))
+    digits = "".join(c for c in best if c.isdigit())
+    return digits if len(digits) >= 6 else None
+
+
+_CODE_STOPWORDS = {
+    "cost", "costo", "price", "precio", "code", "codigo", "número", "numero",
+    "line", "linea", "rsmeans", "for", "the", "and", "del", "the",
+}
+
+
+def _residual_text(question, code):
+    """
+    The descriptive part of the question with the code (and generic filler)
+    removed — e.g. "electrical panel codigo 9999" -> "electrical panel". Empty
+    when nothing meaningful remains (the user only gave a bare code).
+    """
+    without_code = re.sub(r"\d[\d.\s\-]{4,}\d", " ", question)
+    words = [
+        w for w in re.findall(r"[A-Za-z]{3,}", without_code)
+        if w.lower() not in _CODE_STOPWORDS
+    ]
+    return " ".join(words)
+
+
+def _route_from_leaf(hit):
+    """Build a find_path-shaped route dict from a code-resolution hit."""
+    path = hit["path"]
+    # An exact/prefix line is a confident pinpoint; a section match is only the
+    # right grid (the exact line wasn't in our snapshot), so soften confidence.
+    confidence = "medium" if hit["match"] == "section" else "high"
+    hops = [
+        {
+            "code": c,
+            "name": hit["name"] if i == len(path) - 1 else "",
+            "confidence": confidence,
+            "clarify_questions": [],
+            "rank": 0,
+            "fallback": False,
+        }
+        for i, c in enumerate(path)
+    ]
+    return {
+        "path": path,
+        "hops": hops,
+        "confidence": confidence,
+        "candidates": [{"code": path[-1], "name": hit["name"]}],
+        "clarify_questions": [],
+        "fallback_used": False,
+        "ambiguous": False,
+        "matched_line": hit["line"],
+        "matched_item": hit["description"],
+        "code_match": hit["match"],
+    }
+
+
+def _unknown_code_response(code):
+    """Code given but unresolvable and no description to fall back on: ask,
+    never guess a branch from a code we don't recognize."""
+    return {
+        "path": [], "hops": [], "confidence": "low",
+        "candidates": [],
+        "clarify_questions": [
+            f"I couldn't find code {code} in the RSMeans catalog. Please "
+            "double-check the line number, or describe the item in words."
+        ],
+        "fallback_used": True, "ambiguous": True, "unknown_code": code,
+    }
+
+
+# =========================
 # BEAM SEARCH (BACKTRACKING)
 # =========================
 def find_path(question, beam_width=3, max_depth=10):
@@ -179,6 +266,36 @@ def find_path(question, beam_width=3, max_depth=10):
     Returns a dict with path / hops / confidence / clarifications /
     fallback_used, or None if the tree is empty / unreachable.
     """
+    # Fast path: the user pasted an explicit RSMeans code. A code is an exact
+    # identifier, so resolve it against route_items.json instead of letting the
+    # semantic beam search mangle it. Resolution is graded (exact/prefix/section)
+    # and, when it fails, we fall back to the DESCRIPTION — never to the bare
+    # code, which is what produced bad results before.
+    code = _extract_code(question)
+    if code:
+        hit = resolve_code(code)
+        if hit:
+            print("\n" + "=" * 70)
+            print(f">>> CODIGO {code} -> {' > '.join(hit['path'])} "
+                  f"({hit['name']} | match={hit['match']}) <<<")
+            if hit["match"] == "section":
+                print(">>> Linea exacta no esta en la base; navego a su SECCION "
+                      "(el scrape en vivo la tendra)")
+            else:
+                print(f">>> Item: {hit['description']}")
+            print("=" * 70 + "\n")
+            return _route_from_leaf(hit)
+
+        residual = _residual_text(question, code)
+        if residual:
+            print(f"\n>>> Codigo {code} NO encontrado; navego por la descripcion "
+                  f"residual: {residual!r} <<<")
+            question = residual  # fall through to semantic search on the text
+        else:
+            print(f"\n>>> Codigo {code} NO encontrado y sin descripcion -> "
+                  f"pido aclaracion (no adivino) <<<")
+            return _unknown_code_response(code)
+
     # >>> Console indicator: the new (beam-search) routing decision starts here.
     print("\n" + "=" * 70)
     print(">>> NUEVA DECISION DE LA IA (beam search con backtracking) <<<")
