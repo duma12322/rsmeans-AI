@@ -3,7 +3,7 @@ import re
 from app.tree_loader import load_tree
 from app.tree_ai import choose_node
 from app.knowledge_layer import formatting_guidance
-from app.knowledge_records import resolve_code
+from app.knowledge_records import resolve_code, search_items
 
 TREE = load_tree()
 
@@ -74,6 +74,101 @@ def get_children(path):
         node = node[p]["_children"]
 
     return node
+
+
+def _node_name(path):
+    """Display name of the node at `path` in the tree ('' if not found)."""
+    node = TREE
+    name = ""
+    for p in path:
+        entry = node.get(p) if isinstance(node, dict) else None
+        if not entry:
+            return name
+        name = entry.get("_name", "")
+        node = entry.get("_children", {})
+    return name
+
+
+def path_for_code(text):
+    """
+    Map a tree-code reference inside free text to its deepest tree path.
+
+    Handles the way users name a place in the catalog — "section 31.36",
+    "3136", "313613.10" — by walking the tree greedily along whichever child
+    code is a digit-prefix of the token. Returns e.g. ["31", "3136"], or [] when
+    no code-like token (>=4 digits) resolves to at least a section (depth >= 2).
+    Requiring depth >= 2 means a bare division number does NOT lock here — that
+    stays with candidate matching.
+    """
+    for tok in re.findall(r"\d[\d.]*\d", str(text)):
+        digits = tok.replace(".", "")
+        if len(digits) < 4:
+            continue
+        node = TREE
+        path = []
+        while isinstance(node, dict) and node:
+            best, best_len = None, 0
+            for code in node:
+                cd = "".join(c for c in code if c.isdigit())
+                if cd and digits.startswith(cd) and len(cd) > best_len:
+                    best, best_len = code, len(cd)
+            if best is None:
+                break
+            path.append(best)
+            node = node[best].get("_children", {})
+        if len(path) >= 2:
+            return path
+    return []
+
+
+def chapter_reference(text):
+    """
+    Detect a reference to a chapter/section in free text and return its tree
+    path. Covers the ways users point at the catalog:
+
+      - a real section code anywhere   "31.36" / "313613.10" -> ['31','3136'...]
+      - a cue word + number            "capitulo 1" -> ['1'], "division 31" ->
+                                        ['31'], "seccion 2103" -> ['21']
+      - a division NAME                "Earthwork" -> ['31'], "Metals" -> ['5']
+
+    Returns [] when nothing explicit is found. A bare number WITHOUT a cue only
+    locks when it resolves to a real section (via the code walk) — so quantities
+    like "1500 sqft" never lock a chapter by accident.
+    """
+    t = str(text).lower()
+
+    # 1) An explicit, real section code anywhere in the text.
+    deep = path_for_code(text)
+    if deep:
+        return deep
+
+    # 2) A cue word followed by a code/number.
+    m = re.search(
+        r"\b(cap[ií]tulo|chapter|secci[oó]n|section|divisi[oó]n|division|div)\s*#?\s*(\d[\d.]*)",
+        t,
+    )
+    if m:
+        tok = m.group(2)
+        deep = path_for_code(tok)
+        if deep:
+            return deep
+        d = tok.replace(".", "")
+        for cand in (d[:2], (str(int(d[:2])) if d[:2].isdigit() else ""), d[:1]):
+            if cand and cand in TREE:
+                return [cand]
+
+    # 3) A division name (or its parenthetical alias, e.g. "(HVAC)") as a
+    #    bounded phrase. Longest name first so specific names win.
+    for code, entry in sorted(TREE.items(), key=lambda kv: -len(kv[1].get("_name", ""))):
+        name = entry.get("_name", "").lower()
+        if not name:
+            continue
+        for alias in [name, *re.findall(r"\(([^)]+)\)", name)]:
+            alias = alias.strip()
+            if alias and re.search(r"\b" + re.escape(alias) + r"\b", t):
+                return [code]
+
+    return []
 
 
 def format_options(children):
@@ -231,6 +326,101 @@ def _route_from_leaf(hit):
     }
 
 
+def _item_candidates(question, start_path):
+    """
+    Text-match candidates: when the wording matches REAL catalog items (AI-free
+    lookup over route_items.json), surface the top 3 so the user can confirm
+    which exact line they mean — far more useful than abstract division
+    questions.
+
+    Only items whose description contains all the query's words (score >= 1.0)
+    qualify. Crucially, this fires ONLY for SPECIFIC wording: if a generic term
+    ("concrete", "pipe") matches lots of items, we bail out and let the old
+    semantic beam search / division questions handle it — adding the item
+    shortcut WITHOUT replacing the existing ambiguity flow.
+    Returns an item-clarification route (ambiguous, match_type='item') or None.
+    """
+    matches = search_items(question, within_path=start_path or None, limit=60)
+    strong = [m for m in matches if m["score"] >= 1.0]
+
+    # No literal match, or the wording is too generic (many hits) -> defer to the
+    # semantic beam search so it can ask the usual division/section questions.
+    if not strong or len(strong) > 12:
+        return None
+
+    strong = strong[:3]
+
+    candidates = [
+        {
+            "code": m["line"],          # the line number doubles as the pick id
+            "name": m["description"],    # what the user sees
+            "line": m["line"],
+            "path": m["path"],
+            "division": m["division"],
+            "leaf_name": m["name"],
+            "score": m["score"],
+        }
+        for m in strong
+    ]
+
+    print("\n" + "=" * 70)
+    print(f">>> COINCIDENCIAS DE TEXTO: {len(candidates)} item(s) -> se piden a confirmar")
+    for i, c in enumerate(candidates, 1):
+        print(f"    {i}. {c['name']}  [linea {c['line']}]  ({' > '.join(c['path'])})")
+    print("=" * 70 + "\n")
+
+    return {
+        "path": [], "hops": [],
+        "confidence": "medium",
+        "candidates": candidates,
+        "clarify_questions": [
+            "Which of these items do you mean? Reply with its number (1-3) or its line number."
+        ],
+        "fallback_used": False,
+        "ambiguous": True,
+        "match_type": "item",
+    }
+
+
+def build_item_clarification(question, candidates):
+    """needs_clarification response that lists matching ITEMS (not divisions)."""
+    top_score = candidates[0]["score"] if candidates else 0.0
+    # A clear front-runner: the top item is a full-phrase match (>= 1.5) and
+    # strictly stronger than the next. The score decides — that's the method.
+    runner_up = candidates[1]["score"] if len(candidates) > 1 else 0.0
+    best = candidates[0] if (top_score >= 1.5 and top_score > runner_up) else None
+
+    lines = [
+        "I found these catalog items matching your wording. Which one do you mean?",
+        "",
+    ]
+    for i, c in enumerate(candidates, 1):
+        tag = "  (best match)" if best and c["line"] == best["line"] else ""
+        lines.append(
+            f"{i}. {c['name']}  (line {c['line']}, in {' > '.join(c['path'])}){tag}"
+        )
+    lines += [
+        "",
+        "Reply with its number (1-3) or its line number to confirm, "
+        "or describe it differently to refine the search.",
+    ]
+    return {
+        "status": "needs_clarification",
+        "match_type": "item",
+        "question": question,
+        "message": "\n".join(lines),
+        "candidates": candidates,
+        "best_match": best,
+        "top_score": top_score,
+        "clarify_questions": [
+            "Which of these items do you mean? Reply with its number (1-3) or its line number."
+        ],
+        "confidence": "high" if best else "medium",
+        "how_to_ask": formatting_guidance(),
+        "path_so_far": [],
+    }
+
+
 def _unknown_code_response(code):
     """Code given but unresolvable and no description to fall back on: ask,
     never guess a branch from a code we don't recognize."""
@@ -248,10 +438,15 @@ def _unknown_code_response(code):
 # =========================
 # BEAM SEARCH (BACKTRACKING)
 # =========================
-def find_path(question, beam_width=3, max_depth=10):
+def find_path(question, start_path=None, beam_width=3, max_depth=10):
     """
     Walk the tree to a leaf using beam search instead of a greedy per-level
     pick, so a single bad guess high up no longer dooms the whole route.
+
+    `start_path` locks an already-chosen prefix (codes the user committed to
+    during a multi-turn clarification) and drills DOWN from there, instead of
+    re-deciding the division every turn — which is what made the conversation
+    loop. Empty/None == search from the root.
 
     We keep the `beam_width` cheapest partial paths alive at all times. Each
     surviving path branches into the AI's top-ranked children; a hop's cost is
@@ -301,19 +496,47 @@ def find_path(question, beam_width=3, max_depth=10):
                   f"pido aclaracion (no adivino) <<<")
             return _unknown_code_response(code)
 
+    # Second fast path: the wording literally matches real catalog items — show
+    # the top matches for confirmation instead of deliberating divisions.
+    item_match = _item_candidates(question, start_path)
+    if item_match is not None:
+        return item_match
+
     # >>> Console indicator: the new (beam-search) routing decision starts here.
     print("\n" + "=" * 70)
     print(">>> NUEVA DECISION DE LA IA (beam search con backtracking) <<<")
     print(f">>> Pregunta: {question!r}  | beam_width={beam_width}")
     print("=" * 70)
 
+    # Seed the beam at the locked prefix so we search DOWN from there. Validate
+    # it against the tree; ignore a bad prefix rather than crash.
+    start_path = list(start_path or [])
+    try:
+        get_children(start_path)
+    except (KeyError, TypeError):
+        start_path = []
+    base_len = len(start_path)
+    if start_path:
+        print(f">>> Rama bloqueada (inicio): {' > '.join(start_path)}")
+
+    # Synthetic high-confidence hops for the locked codes, so hops stay aligned
+    # with path even when the route starts mid-tree.
+    init_hops = [
+        {
+            "code": c, "name": _node_name(start_path[:i + 1]),
+            "confidence": "high", "clarify_questions": [], "rank": 0,
+            "fallback": False,
+        }
+        for i, c in enumerate(start_path)
+    ]
+
     # Each beam item: {"path", "cost", "hops"}.
-    beam = [{"path": [], "cost": 0.0, "hops": []}]
+    beam = [{"path": list(start_path), "cost": 0.0, "hops": list(init_hops)}]
     completed = []
 
-    # Captured from the very first (division-level) decision so we can present
-    # the candidate divisions and follow-up questions if the request turns out
-    # to be ambiguous at the top — the most common and most useful case.
+    # Captured from the FRONTIER decision (first level below the locked prefix)
+    # so we can present those candidates + follow-up questions if still
+    # ambiguous — at the root this is the division choice, the usual case.
     root_candidates = []
     root_questions = []
     root_fallback = False
@@ -345,8 +568,9 @@ def find_path(question, beam_width=3, max_depth=10):
                   f"(conf={result['confidence']}{', FALLBACK' if is_fallback else ''}) "
                   f"-> ramifica {len(top)}")
 
-            # Capture the root-level picture for a possible clarification reply.
-            if cand["path"] == []:
+            # Capture the frontier decision (first level below the lock) for a
+            # possible clarification reply.
+            if len(cand["path"]) == base_len:
                 root_candidates = [{"code": c, "name": by_code[c]} for c in top]
                 root_questions = result["clarify_questions"]
                 root_fallback = is_fallback

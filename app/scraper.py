@@ -7,6 +7,7 @@ from app.navigator import (
     find_path,
     needs_clarification,
     build_clarification_response,
+    build_item_clarification,
 )
 from app.session import is_session_valid, save_session, SESSION_FILE
 
@@ -274,9 +275,49 @@ async def navigate_path(page, path):
 
 
 # =========================
-# MAIN
+# ROUTING (OFFLINE, NO BROWSER)
 # =========================
-async def start_browser(question):
+def route_question(question, start_path=None):
+    """
+    Decide the route fully offline — no browser. Returns (route, clarification):
+
+    - clarification is None and `route` is a confident path to a leaf, OR
+    - clarification is a needs_clarification response (candidates + questions)
+      when the request is too ambiguous to scrape; `route` may still carry the
+      candidates we found.
+
+    `start_path` locks a branch the user already committed to during a
+    multi-turn clarification, so routing drills down from there.
+
+    Doing this BEFORE launching Chromium means clarification turns are fast and
+    never open a browser — the browser only ever walks a single chosen path.
+    """
+    route = find_path(question, start_path=start_path)
+
+    # Text-match candidates: present the real items found, not divisions.
+    if route and route.get("match_type") == "item" and route.get("ambiguous"):
+        return route, build_item_clarification(question, route["candidates"])
+
+    route_meta = {
+        "confidence": route["confidence"] if route else "low",
+        "candidates": route["candidates"] if route else [],
+        "clarify_questions": route["clarify_questions"] if route else [],
+        "ambiguous": route["ambiguous"] if route else True,
+    }
+    if route is None or not route["path"] or needs_clarification(route_meta):
+        print("\n[BEAM] ruta no confiable -> se presentan candidatos y preguntas")
+        clarification = build_clarification_response(
+            question, route["path"] if route else [], route_meta
+        )
+        return route, clarification
+    return route, None
+
+
+# =========================
+# SCRAPE A CONFIDENT ROUTE (BROWSER)
+# =========================
+async def scrape_route(question, route):
+    """Open the browser, walk the already-chosen route, scrape and return."""
 
     init_db()
 
@@ -307,28 +348,6 @@ async def start_browser(question):
         await page.click("a#\\/SearchData")
 
         await wait_tree_ready(page)
-
-        # ===== DECIDE THE ROUTE (BEAM SEARCH WITH BACKTRACKING, OFFLINE) =====
-        # Explore tree.json with backtracking and pick the best full path to a
-        # leaf BEFORE touching the browser.
-        route = find_path(question)
-
-        # Clarification gate: if the best route is ambiguous (the AI asked
-        # follow-up questions at the division level, or had to guess), stop and
-        # PRESENT the candidate matches plus the questions instead of navigating
-        # to a confidently wrong cost.
-        route_meta = {
-            "confidence": route["confidence"] if route else "low",
-            "candidates": route["candidates"] if route else [],
-            "clarify_questions": route["clarify_questions"] if route else [],
-            "ambiguous": route["ambiguous"] if route else True,
-        }
-        if route is None or not route["path"] or needs_clarification(route_meta):
-            await browser.close()
-            print("\n[BEAM] ruta no confiable -> se presentan candidatos y preguntas")
-            return build_clarification_response(
-                question, route["path"] if route else [], route_meta
-            )
 
         path = route["path"]
         hops = route["hops"]
@@ -382,6 +401,7 @@ async def start_browser(question):
                   f"bare={matched_line['bare_total']} O&P={matched_line['total_op']}")
 
         return {
+            "status": "ok",
             "rows": rows,
             "matched_line": matched_line,
             "path": path,
@@ -391,3 +411,13 @@ async def start_browser(question):
             "fallback_used": route["fallback_used"] or not navigated,
             "clarify_questions": route.get("clarify_questions", []),
         }
+
+
+# =========================
+# SINGLE-SHOT ENTRY (route offline first, browser only if confident)
+# =========================
+async def start_browser(question, start_path=None):
+    route, clarification = route_question(question, start_path=start_path)
+    if clarification is not None:
+        return clarification
+    return await scrape_route(question, route)
