@@ -1,7 +1,9 @@
 import re
 import sys
+import time
 import uuid
 import asyncio
+import threading
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
@@ -17,11 +19,58 @@ app = FastAPI()
 _executor = ThreadPoolExecutor(max_workers=1)
 
 # Multi-turn conversation state, in memory:
-#   {session_id: {"question", "answers", "locked_path", "candidates"}}
+#   {session_id: {"question", "answers", "locked_path", "candidates", "last_seen"}}
 # Each clarification turn re-runs routing with the original question PLUS every
 # answer (for wording), while `locked_path` records the branch the user has
 # explicitly committed to so routing drills DOWN instead of restarting.
+#
+# This store is bounded so abandoned conversations can't leak memory:
+#   - TTL: a session idle longer than SESSION_TTL is purged on the next request.
+#   - Cap: at most MAX_SESSIONS live at once; the least-recently-seen is evicted.
+# A lock guards the dict so concurrent requests can't corrupt it. NOTE: this is
+# still in-process — it does NOT survive a restart and does NOT work across
+# multiple uvicorn workers (run a single worker, or move to an external store).
+SESSION_TTL = 600        # seconds of inactivity before a conversation is dropped
+MAX_SESSIONS = 500       # hard ceiling on concurrent conversations
+
 _SESSIONS = {}
+_SESSIONS_LOCK = threading.Lock()
+
+
+def _get_session(session_id):
+    """Purge idle sessions, then return the live session for `session_id`
+    (touching its last_seen) or None. Thread-safe."""
+    if not session_id:
+        return None
+    now = time.time()
+    with _SESSIONS_LOCK:
+        for sid in [s for s, v in _SESSIONS.items() if now - v["last_seen"] > SESSION_TTL]:
+            _SESSIONS.pop(sid, None)
+        sess = _SESSIONS.get(session_id)
+        if sess is not None:
+            sess["last_seen"] = now
+        return sess
+
+
+def _create_session(question):
+    """Create a new session, evicting the oldest if at capacity. Thread-safe."""
+    now = time.time()
+    with _SESSIONS_LOCK:
+        while len(_SESSIONS) >= MAX_SESSIONS:
+            oldest = min(_SESSIONS, key=lambda s: _SESSIONS[s]["last_seen"])
+            _SESSIONS.pop(oldest, None)
+        sid = uuid.uuid4().hex[:12]
+        _SESSIONS[sid] = {
+            "question": question, "answers": [],
+            "locked_path": [], "candidates": [], "candidate_kind": None,
+            "last_seen": now,
+        }
+        return sid, _SESSIONS[sid]
+
+
+def _drop_session(session_id):
+    with _SESSIONS_LOCK:
+        _SESSIONS.pop(session_id, None)
 
 
 def _run_scraper(question: str, start_path):
@@ -118,21 +167,16 @@ async def ask(req: AskRequest):
     answer = _clean(req.answer)
 
     # ---- Resolve or create the conversation session ----
-    if req.session_id and req.session_id in _SESSIONS:
+    sess = _get_session(req.session_id)
+    if sess is not None:
         sid = req.session_id
-        sess = _SESSIONS[sid]
     else:
         if not question:
             return {
                 "status": "error",
                 "message": "Send a 'question' to start, or a valid 'session_id' to continue.",
             }
-        sid = uuid.uuid4().hex[:12]
-        sess = {
-            "question": question, "answers": [],
-            "locked_path": [], "candidates": [], "candidate_kind": None,
-        }
-        _SESSIONS[sid] = sess
+        sid, sess = _create_session(question)
 
     # `route_query` overrides what we route on this turn — set when the user
     # confirms one of the ITEM candidates (we route straight to its line number).
@@ -174,14 +218,16 @@ async def ask(req: AskRequest):
     if isinstance(result, dict) and result.get("status") == "needs_clarification":
         # Still ambiguous: remember the candidates we just offered and their kind
         # (item vs division) so the next answer is interpreted correctly.
-        sess["candidates"] = result.get("candidates", [])
-        sess["candidate_kind"] = result.get("match_type", "division")
+        with _SESSIONS_LOCK:
+            sess["candidates"] = result.get("candidates", [])
+            sess["candidate_kind"] = result.get("match_type", "division")
+            sess["last_seen"] = time.time()
         result["session_id"] = sid
         result["locked_path"] = list(sess["locked_path"])
         return result
 
     # Answered (or errored): the conversation is done, drop the session.
-    _SESSIONS.pop(sid, None)
+    _drop_session(sid)
     if isinstance(result, dict):
         result.setdefault("status", "ok")
         result["session_id"] = sid

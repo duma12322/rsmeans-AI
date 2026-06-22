@@ -1,7 +1,7 @@
 import asyncio
 from playwright.async_api import async_playwright
 
-from app.db import init_db, save_to_db
+from app.db import init_db, save_to_db, log_error
 from app.utils import clean_number
 from app.navigator import (
     find_path,
@@ -10,10 +10,13 @@ from app.navigator import (
     build_item_clarification,
 )
 from app.session import is_session_valid, save_session, SESSION_FILE
+from app.config import RS_EMAIL, RS_PASSWORD
 
 
-EMAIL = "thk40@scarletmail.rutgers.edu"
-PASSWORD = "x12345Clear_12345x12345"
+# RSMeans credentials, read from .env (RS_EMAIL / RS_PASSWORD). Re-exported under
+# these names because app/record_scraper.py imports EMAIL/PASSWORD from here.
+EMAIL = RS_EMAIL
+PASSWORD = RS_PASSWORD
 
 
 # =========================
@@ -317,100 +320,147 @@ def route_question(question, start_path=None):
 # SCRAPE A CONFIDENT ROUTE (BROWSER)
 # =========================
 async def scrape_route(question, route):
-    """Open the browser, walk the already-chosen route, scrape and return."""
+    """
+    Open the browser, walk the already-chosen route, scrape and return.
 
+    Any live-site failure (login flow changed, grid never loads, a timeout, or a
+    path code missing from the live tree) is caught and turned into a useful
+    `status: "error"` response instead of a raw exception that would kill the
+    request with no message. The browser is always closed.
+    """
     init_db()
 
-    async with async_playwright() as p:
+    path = route["path"]
+    hops = route["hops"]
+    final_name = hops[-1]["name"] if hops else ""
 
-        browser = await p.chromium.launch(headless=False)
-
-        context = await browser.new_context(
-            storage_state=SESSION_FILE if is_session_valid() else None
-        )
-
-        page = await context.new_page()
-
-        await page.goto("https://www.rsmeansonline.com/")
-
-        # ================= LOGIN =================
-        if not is_session_valid():
-            await page.click("#btnLogin")
-            await page.fill("#username", EMAIL)
-            await page.click("button[type='submit']")
-            await page.fill("#password", PASSWORD)
-            await page.click("#btnTerms")
-
-            await page.wait_for_timeout(5000)
-            await save_session(context)
-
-        # ================= NAV =================
-        await page.click("a#\\/SearchData")
-
-        await wait_tree_ready(page)
-
-        path = route["path"]
-        hops = route["hops"]
-        final_name = hops[-1]["name"]
-
-        print("\nCHOSEN PATH:", " -> ".join(path))
-        print("ROUTE CONFIDENCE:", route["confidence"])
-
-        # ================= NAVIGATE THE CHOSEN PATH (VARIABLE DEPTH) =================
-        navigated = await navigate_path(page, path)
-
-        # IMPORTANT: WAIT FOR REAL DATA
-        await wait_rsmeans_data(page)
-
-        # ================= GRID =================
-        rows = await scrape_grid(page)
-
-        if rows:
-            save_to_db(
-                rows=rows,
-                question=question,
-                c3=path[-2] if len(path) >= 2 else None,
-                c4=path[-1],
-                final_code=path[-1],
-                final_name=final_name,
-            )
-
-        await browser.close()
-
-        # If the user asked for an explicit code (direct code lookup), narrow the
-        # rows we RETURN to exactly what was asked. We always SAVE the full grid
-        # above (richer knowledge base); only the response is focused:
-        #   - full 12-digit line number -> just that one line
-        #   - shorter section code (e.g. 265613.10) -> all lines under it
-        # The whole grid is kept under `all_rows` so nothing is lost.
-        requested_code = route.get("requested_code")
-        all_rows = rows
-        rows = filter_rows_by_code(all_rows, requested_code)
-
-        # The single best (exact) line, for a one-shot "line number + costs" answer.
-        matched_line = match_scraped_line(all_rows, route.get("matched_line"))
-
-        print("\nFINAL PATH:", " -> ".join(path))
-        print(f"FINAL NODE: {path[-1]} - {final_name}")
-        if requested_code:
-            print(f"CODIGO PEDIDO: {requested_code} -> devuelvo {len(rows)} "
-                  f"linea(s) de {len(all_rows)} en la seccion")
-        if matched_line:
-            print(f"LINEA EXACTA: {matched_line['line_number']} - "
-                  f"{matched_line['description']} | "
-                  f"bare={matched_line['bare_total']} O&P={matched_line['total_op']}")
-
+    def _error(message, exc=None):
+        if exc is not None:
+            print(f"[scrape] ERROR: {exc}")
+        log_error(question, path, message, exc)
         return {
-            "status": "ok",
-            "rows": rows,
-            "matched_line": matched_line,
+            "status": "error",
+            "message": message,
+            "error": str(exc) if exc is not None else None,
             "path": path,
-            "final_code": path[-1],
-            "final_name": final_name,
-            "confidence": route["confidence"],
-            "fallback_used": route["fallback_used"] or not navigated,
+            "confidence": route.get("confidence"),
             "clarify_questions": route.get("clarify_questions", []),
         }
+
+    browser = None
+    try:
+        async with async_playwright() as p:
+
+            browser = await p.chromium.launch(headless=False)
+
+            context = await browser.new_context(
+                storage_state=SESSION_FILE if is_session_valid() else None
+            )
+
+            page = await context.new_page()
+
+            await page.goto("https://www.rsmeansonline.com/")
+
+            # ================= LOGIN =================
+            if not is_session_valid():
+                if not EMAIL or not PASSWORD:
+                    return _error(
+                        "RSMeans login no configurado: define RS_EMAIL y "
+                        "RS_PASSWORD en el archivo .env."
+                    )
+                await page.click("#btnLogin")
+                await page.fill("#username", EMAIL)
+                await page.click("button[type='submit']")
+                await page.fill("#password", PASSWORD)
+                await page.click("#btnTerms")
+
+                await page.wait_for_timeout(5000)
+                await save_session(context)
+
+            # ================= NAV =================
+            await page.click("a#\\/SearchData")
+
+            await wait_tree_ready(page)
+
+            print("\nCHOSEN PATH:", " -> ".join(path))
+            print("ROUTE CONFIDENCE:", route["confidence"])
+
+            # ================= NAVIGATE THE CHOSEN PATH (VARIABLE DEPTH) =======
+            navigated = await navigate_path(page, path)
+            if not navigated:
+                # A code in our snapshot path was not found in the live tree
+                # (tree.json went stale). Don't scrape the wrong grid — say so.
+                return _error(
+                    "No pude seguir la ruta elegida en el catalogo en vivo de "
+                    "RSMeans (la taxonomia pudo haber cambiado). Intenta "
+                    "reformular la consulta o vuelve a intentar."
+                )
+
+            # IMPORTANT: WAIT FOR REAL DATA
+            await wait_rsmeans_data(page)
+
+            # ================= GRID =================
+            rows = await scrape_grid(page)
+
+            if rows:
+                save_to_db(
+                    rows=rows,
+                    question=question,
+                    c3=path[-2] if len(path) >= 2 else None,
+                    c4=path[-1],
+                    final_code=path[-1],
+                    final_name=final_name,
+                )
+
+            # If the user asked for an explicit code (direct code lookup), narrow
+            # the rows we RETURN to exactly what was asked. We always SAVE the
+            # full grid above (richer knowledge base); only the response is
+            # focused:
+            #   - full 12-digit line number -> just that one line
+            #   - shorter section code (e.g. 265613.10) -> all lines under it
+            # The whole grid is kept under `all_rows` so nothing is lost.
+            requested_code = route.get("requested_code")
+            all_rows = rows
+            rows = filter_rows_by_code(all_rows, requested_code)
+
+            # The single best (exact) line, for a one-shot "line + costs" answer.
+            matched_line = match_scraped_line(all_rows, route.get("matched_line"))
+
+            print("\nFINAL PATH:", " -> ".join(path))
+            print(f"FINAL NODE: {path[-1]} - {final_name}")
+            if requested_code:
+                print(f"CODIGO PEDIDO: {requested_code} -> devuelvo {len(rows)} "
+                      f"linea(s) de {len(all_rows)} en la seccion")
+            if matched_line:
+                print(f"LINEA EXACTA: {matched_line['line_number']} - "
+                      f"{matched_line['description']} | "
+                      f"bare={matched_line['bare_total']} O&P={matched_line['total_op']}")
+
+            return {
+                "status": "ok",
+                "rows": rows,
+                "matched_line": matched_line,
+                "path": path,
+                "final_code": path[-1],
+                "final_name": final_name,
+                "confidence": route["confidence"],
+                "fallback_used": route["fallback_used"] or not navigated,
+                "clarify_questions": route.get("clarify_questions", []),
+            }
+
+    except Exception as e:  # noqa: BLE001 - any live-site failure -> useful error
+        return _error(
+            "Hubo un problema al consultar RSMeans en vivo (login, carga de la "
+            "grilla o tiempo de espera agotado). Por favor intenta de nuevo en "
+            "un momento.",
+            exc=e,
+        )
+    finally:
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                pass
 
 
 # =========================
