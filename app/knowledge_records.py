@@ -116,7 +116,20 @@ _SEARCH_STOPWORDS = {
     "the", "of", "for", "a", "an", "to", "and", "or", "with", "in", "on", "at",
     "by", "cost", "costs", "price", "install", "installation", "replace",
     "repair", "per", "each", "new", "used", "type", "size",
+    # Spanish filler — without these, "dame el ... de la" pollute the score.
+    "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "y",
+    "o", "con", "en", "por", "para", "que", "cual", "dame", "dime", "costo",
+    "precio", "instalar", "reemplazar", "reparar", "cada", "nuevo", "tipo",
+    "tamaño", "tamano",
 }
+
+# A reference to a place in the catalog ("section 31", "seccion 31") — its
+# number is a LOCATION, not a dimension, so it must be stripped before
+# tokenizing or it would be scored as a spec value and penalize every item.
+_SECTION_REF = re.compile(
+    r"\b(?:cap[ií]tulo|chapter|secci[oó]n|section|divisi[oó]n|division|div)"
+    r"\s*#?\s*[\d.]+",
+)
 
 
 def _stem(word):
@@ -127,6 +140,36 @@ def _stem(word):
     if len(word) > 3 and word.endswith("s"):
         return word[:-1]
     return word
+
+
+def _is_spec_value(token):
+    """
+    True for a numeric specification the user typed — a size, rating or
+    dimension that pinpoints the exact catalog line ("4" inch, "200" amp,
+    "40" gal). These are the strongest discriminators between near-identical
+    items, so they must NOT be dropped as short tokens.
+    """
+    return any(ch.isdigit() for ch in token)
+
+
+def _query_tokens(query):
+    """
+    Meaningful search tokens from a free-text query.
+
+    Keeps alphabetic words of length >= 2 (minus stopwords) AND every numeric
+    spec value regardless of length — a lone "4" or "2" is a size/rating
+    ("4 inch", "2 ton") that identifies the exact line, so it must survive
+    tokenization. Without this, "4 inch slab" and "6 inch slab" would score
+    identically and the right record could not be told apart.
+    """
+    text = _SECTION_REF.sub(" ", str(query).lower())
+    out = []
+    for t in re.findall(r"[a-z0-9]+", text):
+        if t in _SEARCH_STOPWORDS:
+            continue
+        if len(t) >= 2 or _is_spec_value(t):
+            out.append(t)
+    return out
 
 
 def _token_hits(tokens, words):
@@ -156,17 +199,20 @@ def search_items(query, within_path=None, limit=20):
     (0..1), PLUS 1.0 when the whole query phrase appears as a substring. So an
     exact-wording hit scores ~2.0 and a partial word overlap scores <1.0.
 
+    Numeric SPEC VALUES the user typed (a size/rating like "4" inch or "200"
+    amp) are treated as discriminators: a description carrying every spec the
+    user gave is rewarded, and one missing or contradicting a spec is pushed
+    down — so "4 inch slab" outranks "6 inch slab" instead of tying it.
+
     `within_path` restricts the search to one branch (used while a conversation
     has a locked path). Returns dicts:
         {line, description, path, name, division, leaf_key, score}
     """
-    tokens = [
-        t for t in re.findall(r"[a-z0-9]+", str(query).lower())
-        if len(t) >= 2 and t not in _SEARCH_STOPWORDS
-    ]
+    tokens = _query_tokens(query)
     if not tokens:
         return []
     phrase = " ".join(tokens)
+    spec_values = [t for t in tokens if _is_spec_value(t)]
 
     data = _load()
     prefix = " > ".join(within_path) if within_path else None
@@ -188,6 +234,15 @@ def search_items(query, within_path=None, limit=20):
                 score = hits / len(tokens)
                 if phrase in desc:
                     score += 1.0
+                # Spec-value emphasis: the size/rating the user typed identifies
+                # the exact line. Reward a description that carries every spec;
+                # sink one that is missing or contradicts a spec the user gave.
+                if spec_values:
+                    matched = sum(1 for s in spec_values if s in words)
+                    if matched == len(spec_values):
+                        score += 0.5
+                    else:
+                        score -= 0.5 * (len(spec_values) - matched)
                 results.append({
                     "line": it.get("line", ""),
                     "description": desc_raw,

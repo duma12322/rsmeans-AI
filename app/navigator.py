@@ -39,18 +39,45 @@ _CONTENTLESS_WORDS = {
 }
 
 
+# Dimension/unit words. A request that names ONLY a measure ("6 inch deep")
+# and no thing names no subject to price — hundreds of items share that
+# dimension — so it is ambiguous, the same as "what is the cost?". (EN + ES.)
+_MEASURE_WORDS = {
+    "inch", "inches", "deep", "depth", "wide", "width", "thick", "thickness",
+    "high", "height", "tall", "long", "length", "ft", "feet", "foot", "yard",
+    "yards", "meter", "metre", "cm", "mm", "gauge", "ga", "diameter", "dia",
+    "diam", "radius", "round", "square", "thk",
+    "pulgada", "pulgadas", "profundo", "profundidad", "ancho", "grueso",
+    "espesor", "alto", "altura", "largo", "longitud", "pie", "pies", "metro",
+    "metros", "diametro", "diámetro", "redondo", "cuadrado",
+}
+
+# Words that point at a PLACE in the catalog (a section/division), not at an
+# item. "the 6 inch deep one in section 31" still names no item.
+_SECTION_WORDS = {
+    "section", "seccion", "sección", "division", "divisi", "divisor",
+    "chapter", "capitulo", "capítulo", "div",
+}
+
+
 def _has_concrete_subject(question):
     """
     True when the question names something to price — a material, item, or work
-    word beyond generic 'cost' filler. False for contentless asks like "what is
-    the cost?" / "how much?" / "cuánto cuesta?", where listing candidate
-    divisions would just be guessing.
+    word beyond generic 'cost' filler, a bare measure, or a section reference.
+    False for contentless asks like "what is the cost?" / "how much?" AND for
+    measure-only asks like "6 inch deep" / "the 6 inch deep one in section 31",
+    where any candidate we surfaced would just be a guess.
     """
     # A pasted RSMeans code is itself a concrete subject.
     if _extract_code(question):
         return True
     words = re.findall(r"[A-Za-zÁÉÍÓÚáéíóúñÑ]{2,}", question.lower())
-    return any(w not in _CONTENTLESS_WORDS for w in words)
+    return any(
+        w not in _CONTENTLESS_WORDS
+        and w not in _MEASURE_WORDS
+        and w not in _SECTION_WORDS
+        for w in words
+    )
 
 
 def _masterformat_orientation(limit=8):
@@ -588,6 +615,19 @@ def find_path(question, start_path=None, beam_width=3, max_depth=10):
             print(f"\n>>> Codigo {code} NO encontrado y sin descripcion -> "
                   f"pido aclaracion (no adivino) <<<")
             return _unknown_code_response(code)
+
+    # A request that names only a MEASURE ("6 inch deep") with no item names no
+    # subject to price — countless lines share that dimension — so don't let
+    # beam search confidently pick one. Skip this gate when a branch is already
+    # locked (multi-turn): there a bare measure DOES disambiguate within it.
+    if not (start_path or []) and not _has_concrete_subject(question):
+        print("\n>>> Sin sujeto concreto (solo medida/relleno) -> ambiguo, "
+              "pido aclaracion en vez de adivinar <<<")
+        return {
+            "path": [], "hops": [], "confidence": "low",
+            "candidates": [], "clarify_questions": [],
+            "fallback_used": False, "ambiguous": True,
+        }
 
     # Second fast path: the wording literally matches real catalog items — show
     # the top matches for confirmation instead of deliberating divisions.
