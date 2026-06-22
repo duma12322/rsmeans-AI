@@ -11,6 +11,7 @@ playwright/.cache/
 
 # Session
 session.json
+session_time.txt
 
 # Database
 *.db
