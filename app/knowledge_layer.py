@@ -190,12 +190,12 @@ def formatting_guidance() -> dict:
             "Ask about one line item per question — not several at once.",
             "Add a qualifier when it helps: size, type, interior/exterior, residential/commercial.",
             "Everyday words are fine — you do not need RSMeans codes.",
+            "If you DO know the RSMeans line number, ask for it directly — any "
+            "separator works, e.g. 'What is the cost of code 26 56 13. 10 2870?'.",
         ],
         "good_examples": [
             "Cost to paint interior walls",
-            "Install a 200 amp electrical panel",
-            "Replace a residential water heater",
-            "Pour a 4 inch concrete slab",
+            "What is the cost of code 26 56 13. 10 2870?",
         ],
         "avoid_examples": [
             "Tell me the cost  (no item named)",

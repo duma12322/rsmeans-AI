@@ -23,11 +23,104 @@ def needs_clarification(meta):
     return bool(meta.get("ambiguous"))
 
 
+# Words that carry no item/work meaning. A question made of ONLY these has no
+# subject to price ("what is the cost?"), so candidate divisions would be pure
+# guesses — we guide the user instead of showing them. (EN + ES.)
+_CONTENTLESS_WORDS = {
+    "cost", "costs", "costo", "costos", "price", "prices", "precio", "precios",
+    "much", "many", "what", "whats", "which", "how", "the", "this", "that",
+    "for", "and", "with", "value", "total", "give", "tell", "show", "need",
+    "want", "please", "rsmeans", "code", "codigo", "number", "line", "item",
+    "cuanto", "cuesta", "cuestan", "que", "cual", "dame", "dime", "por", "favor",
+    "valor", "del", "los", "las", "una", "uno",
+    # short filler/verbs (the {2,} regex never captures 1-letter words)
+    "is", "are", "be", "am", "of", "it", "me", "my", "do", "does", "did",
+    "in", "on", "at", "or", "us", "we", "to", "es", "un", "la", "el", "de",
+}
+
+
+def _has_concrete_subject(question):
+    """
+    True when the question names something to price — a material, item, or work
+    word beyond generic 'cost' filler. False for contentless asks like "what is
+    the cost?" / "how much?" / "cuánto cuesta?", where listing candidate
+    divisions would just be guessing.
+    """
+    # A pasted RSMeans code is itself a concrete subject.
+    if _extract_code(question):
+        return True
+    words = re.findall(r"[A-Za-zÁÉÍÓÚáéíóúñÑ]{2,}", question.lower())
+    return any(w not in _CONTENTLESS_WORDS for w in words)
+
+
+def _masterformat_orientation(limit=8):
+    """A few real MasterFormat divisions (code - name) from the taxonomy, to
+    orient a lost user toward the categories they can ask about."""
+    out = []
+    for code, node in TREE.items():
+        name = (node.get("_name") or "").strip()
+        if name:
+            out.append({"code": code, "name": name})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _build_formulation_guidance(question, path):
+    """
+    Response for a contentless question (no item named). Instead of fake
+    "possible results", it tells the user what's missing and shows how to ask —
+    real MasterFormat categories plus well-formed example questions.
+    """
+    guide = formatting_guidance()
+    divisions = _masterformat_orientation()
+
+    lines = [
+        "I can look up a cost, but your question doesn't name what to price "
+        "yet — \"the cost of what?\". Tell me the item or work and I'll find it.",
+        "",
+        "RSMeans is organized by MasterFormat categories. Some you can ask about:",
+        "",
+    ]
+    lines += [f"* {d['code']} - {d['name']}" for d in divisions]
+    lines += [
+        "",
+        "Phrase it as an action plus the specific item, for example:",
+        "",
+    ]
+    lines += [f"* {ex}" for ex in guide["good_examples"]]
+    lines += [
+        "",
+        "Tip: name the material or item, ask about one thing at a time, and "
+        "everyday words are fine — you don't need an RSMeans code.",
+    ]
+
+    return {
+        "status": "needs_subject",
+        "question": question,
+        "message": "\n".join(lines),
+        "candidates": [],
+        "best_match": None,
+        "clarify_questions": [],
+        "confidence": "low",
+        "categories": divisions,
+        "how_to_ask": guide,
+        "path_so_far": path,
+    }
+
+
 def build_clarification_response(question, path, meta):
     """
     Ambiguity response that PRESENTS the candidate matches and asks follow-up
     questions, rather than discarding the results. Follows the required format.
+
+    Exception: when the question names no subject at all (e.g. "what is the
+    cost?"), the candidate divisions would be meaningless guesses — so we return
+    formulation guidance (how to ask + MasterFormat examples) instead.
     """
+    if not _has_concrete_subject(question):
+        return _build_formulation_guidance(question, path)
+
     candidates = meta.get("candidates", [])
     questions = meta.get("clarify_questions", [])
     best = candidates[0] if (candidates and meta.get("confidence") == "high") else None
