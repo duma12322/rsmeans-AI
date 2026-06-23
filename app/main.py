@@ -1,3 +1,4 @@
+import os
 import re
 import sys
 import time
@@ -8,12 +9,26 @@ from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.scraper import start_browser
 from app.navigator import chapter_reference
 
 app = FastAPI()
+
+# Allow the Next.js frontend (dev server + any local origin) to call the API.
+# Override with FRONTEND_ORIGINS="https://app.example.com,https://..." in .env.
+_origins = os.getenv(
+    "FRONTEND_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000",
+).split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in _origins if o.strip()],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # correr el scraper en un hilo dedicado con su propio Proactor loop.
 _executor = ThreadPoolExecutor(max_workers=1)
