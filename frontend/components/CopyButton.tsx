@@ -31,7 +31,7 @@ export function CopyButton({
       title={title}
       aria-label={title}
       className={
-        "inline-flex items-center gap-1.5 text-slate-500 transition hover:text-indigo-600 " +
+        "inline-flex items-center gap-1.5 text-slate-500 transition hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 " +
         className
       }
     >

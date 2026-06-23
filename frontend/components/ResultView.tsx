@@ -19,13 +19,13 @@ export function ResultView({
 }) {
   if (data.status === "error") {
     return (
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
         <span>{data.message}</span>
         {onRetry && (
           <button
             type="button"
             onClick={onRetry}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs font-medium text-rose-700 shadow-sm transition hover:bg-rose-100"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs font-medium text-rose-700 shadow-sm transition hover:bg-rose-100 dark:border-rose-500/40 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-500/10"
           >
             <RetryIcon />
             Retry
@@ -50,7 +50,7 @@ export function ResultView({
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-sm font-semibold text-slate-900">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
             {data.final_name}
           </h2>
           <PathBreadcrumb path={data.path} />
@@ -69,7 +69,7 @@ export function ResultView({
       )}
 
       {data.fallback_used && (
-        <p className="text-xs text-amber-600">
+        <p className="text-xs text-amber-600 dark:text-amber-400">
           Note: routing wasn&apos;t fully confident, so this section is a best
           effort. Refine your wording if it looks off.
         </p>

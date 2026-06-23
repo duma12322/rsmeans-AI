@@ -2,13 +2,15 @@
 export function PathBreadcrumb({ path }: { path: string[] }) {
   if (!path?.length) return null;
   return (
-    <nav className="flex flex-wrap items-center gap-1 text-xs text-slate-500">
+    <nav className="flex flex-wrap items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
       {path.map((code, i) => (
         <span key={code + i} className="flex items-center gap-1">
-          <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-600">
+          <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-600 dark:bg-slate-800 dark:text-slate-300">
             {code}
           </code>
-          {i < path.length - 1 && <span className="text-slate-300">›</span>}
+          {i < path.length - 1 && (
+            <span className="text-slate-300 dark:text-slate-600">›</span>
+          )}
         </span>
       ))}
     </nav>
