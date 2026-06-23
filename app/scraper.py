@@ -319,7 +319,7 @@ def route_question(question, start_path=None):
 # =========================
 # SCRAPE A CONFIDENT ROUTE (BROWSER)
 # =========================
-async def scrape_route(question, route):
+async def scrape_route(question, route, progress=None):
     """
     Open the browser, walk the already-chosen route, scrape and return.
 
@@ -329,6 +329,7 @@ async def scrape_route(question, route):
     request with no message. The browser is always closed.
     """
     init_db()
+    emit = progress or (lambda *a, **k: None)
 
     path = route["path"]
     hops = route["hops"]
@@ -351,6 +352,7 @@ async def scrape_route(question, route):
     try:
         async with async_playwright() as p:
 
+            emit("opening")  # entrando al sitio en vivo de RSMeans
             browser = await p.chromium.launch(headless=False)
 
             context = await browser.new_context(
@@ -363,6 +365,7 @@ async def scrape_route(question, route):
 
             # ================= LOGIN =================
             if not is_session_valid():
+                emit("login")  # sesion expirada: autenticando de nuevo
                 if not EMAIL or not PASSWORD:
                     return _error(
                         "RSMeans login no configurado: define RS_EMAIL y "
@@ -386,6 +389,7 @@ async def scrape_route(question, route):
             print("ROUTE CONFIDENCE:", route["confidence"])
 
             # ================= NAVIGATE THE CHOSEN PATH (VARIABLE DEPTH) =======
+            emit("navigating")  # recorriendo la ruta elegida en el catalogo
             navigated = await navigate_path(page, path)
             if not navigated:
                 # A code in our snapshot path was not found in the live tree
@@ -397,6 +401,7 @@ async def scrape_route(question, route):
                 )
 
             # IMPORTANT: WAIT FOR REAL DATA
+            emit("scraping")  # esperando y leyendo la grilla de precios en vivo
             await wait_rsmeans_data(page)
 
             # ================= GRID =================
@@ -466,8 +471,10 @@ async def scrape_route(question, route):
 # =========================
 # SINGLE-SHOT ENTRY (route offline first, browser only if confident)
 # =========================
-async def start_browser(question, start_path=None):
+async def start_browser(question, start_path=None, progress=None):
+    emit = progress or (lambda *a, **k: None)
+    emit("analyzing")  # IA recorriendo el arbol offline (todavia sin navegador)
     route, clarification = route_question(question, start_path=start_path)
     if clarification is not None:
         return clarification
-    return await scrape_route(question, route)
+    return await scrape_route(question, route, progress=progress)

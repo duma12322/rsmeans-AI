@@ -1,8 +1,10 @@
 import os
 import re
 import sys
+import json
 import time
 import uuid
+import queue
 import asyncio
 import threading
 from typing import Optional
@@ -10,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.scraper import start_browser
@@ -88,14 +91,16 @@ def _drop_session(session_id):
         _SESSIONS.pop(session_id, None)
 
 
-def _run_scraper(question: str, start_path):
+def _run_scraper(question: str, start_path, progress=None):
     if sys.platform == "win32":
         loop = asyncio.ProactorEventLoop()
     else:
         loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(start_browser(question, start_path=start_path))
+        return loop.run_until_complete(
+            start_browser(question, start_path=start_path, progress=progress)
+        )
     finally:
         loop.close()
 
@@ -176,8 +181,12 @@ def _clean(value):
     return None if value.strip().lower() == "string" else value
 
 
-@app.post("/ask")
-async def ask(req: AskRequest):
+def _prepare_turn(req: "AskRequest"):
+    """
+    Resolve/create the session and compute the query to route on this turn.
+    Returns (sid, sess, combined, error) — on error the first three are None and
+    `error` is the response dict to return. Shared by /ask and /ask/stream.
+    """
     question = _clean(req.question)
     answer = _clean(req.answer)
 
@@ -187,7 +196,7 @@ async def ask(req: AskRequest):
         sid = req.session_id
     else:
         if not question:
-            return {
+            return None, None, None, {
                 "status": "error",
                 "message": "Send a 'question' to start, or a valid 'session_id' to continue.",
             }
@@ -222,14 +231,12 @@ async def ask(req: AskRequest):
                     sess["locked_path"].append(chosen)
 
     combined = route_query or _combined_text(sess)
+    return sid, sess, combined, None
 
-    # ---- Route (offline) + scrape if confident, off the event loop ----
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        _executor, _run_scraper, combined, list(sess["locked_path"])
-    )
 
-    # ---- Multi-turn bookkeeping ----
+def _finalize_turn(sid, sess, result):
+    """Multi-turn bookkeeping: persist candidates if still ambiguous, otherwise
+    drop the session. Stamps session_id onto the result. Shared by both endpoints."""
     if isinstance(result, dict) and result.get("status") == "needs_clarification":
         # Still ambiguous: remember the candidates we just offered and their kind
         # (item vs division) so the next answer is interpreted correctly.
@@ -247,3 +254,85 @@ async def ask(req: AskRequest):
         result.setdefault("status", "ok")
         result["session_id"] = sid
     return result
+
+
+@app.post("/ask")
+async def ask(req: AskRequest):
+    sid, sess, combined, error = _prepare_turn(req)
+    if error is not None:
+        return error
+
+    # ---- Route (offline) + scrape if confident, off the event loop ----
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        _executor, _run_scraper, combined, list(sess["locked_path"])
+    )
+    return _finalize_turn(sid, sess, result)
+
+
+def _sse(obj) -> str:
+    """Format one Server-Sent Events frame."""
+    return f"data: {json.dumps(obj)}\n\n"
+
+
+@app.post("/ask/stream")
+async def ask_stream(req: AskRequest):
+    """
+    Same as /ask, but streams real progress milestones (Server-Sent Events) while
+    the scraper runs, then a final `{"type":"result", "data": <ask-response>}`.
+
+    The scraper still runs on the dedicated Proactor thread; it pushes phase names
+    ("analyzing", "opening", "login", "navigating", "scraping") into a thread-safe
+    queue that this generator drains on the event loop — no browser call moves
+    onto the FastAPI loop.
+    """
+    sid, sess, combined, error = _prepare_turn(req)
+    if error is not None:
+        async def _err_gen():
+            yield _sse({"type": "result", "data": error})
+        return StreamingResponse(_err_gen(), media_type="text/event-stream")
+
+    locked = list(sess["locked_path"])
+
+    async def _gen():
+        events: "queue.Queue" = queue.Queue()
+
+        # Called from the scraper thread; queue.put is thread-safe.
+        def progress(phase, detail=None):
+            events.put({"type": "progress", "phase": phase, "detail": detail})
+
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(
+            _executor, _run_scraper, combined, locked, progress
+        )
+
+        # Relay progress events as they arrive; poll the queue without blocking
+        # the loop until the scrape finishes.
+        while not future.done():
+            try:
+                yield _sse(events.get_nowait())
+            except queue.Empty:
+                await asyncio.sleep(0.05)
+        # Flush any events queued in the final moment.
+        while True:
+            try:
+                yield _sse(events.get_nowait())
+            except queue.Empty:
+                break
+
+        try:
+            result = future.result()
+        except Exception as exc:  # noqa: BLE001 - surface as a result, not a 500
+            result = {
+                "status": "error",
+                "message": "Hubo un problema procesando la consulta.",
+                "error": str(exc),
+            }
+        final = _finalize_turn(sid, sess, result)
+        yield _sse({"type": "result", "data": final})
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

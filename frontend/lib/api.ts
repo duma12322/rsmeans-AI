@@ -90,6 +90,77 @@ export interface AskRequest {
   answer?: string;
 }
 
+// Real-time variant of ask(): hits POST /ask/stream, which emits Server-Sent
+// Events. Each `progress` event reports the live phase the backend is in
+// ("analyzing", "opening", "login", "navigating", "scraping"); `onProgress` is
+// called with it. The promise resolves with the final AskResponse.
+export type Phase =
+  | "analyzing"
+  | "opening"
+  | "login"
+  | "navigating"
+  | "scraping";
+
+export async function askStream(
+  payload: AskRequest,
+  onProgress: (phase: Phase) => void
+): Promise<AskResponse> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/ask/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    return {
+      status: "error",
+      message:
+        "Couldn't reach the backend. Is it running at " +
+        `${API_URL}? (uvicorn app.main:app)`,
+    };
+  }
+
+  if (!res.ok || !res.body) {
+    return { status: "error", message: `Request failed (${res.status}).` };
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let final: AskResponse | null = null;
+
+  // SSE frames are separated by a blank line; each frame has one `data:` line.
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      const dataLine = frame
+        .split("\n")
+        .find((l) => l.startsWith("data:"));
+      if (!dataLine) continue;
+      const raw = dataLine.slice(5).trim();
+      if (!raw) continue;
+      let evt: { type: string; phase?: Phase; data?: AskResponse };
+      try {
+        evt = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      if (evt.type === "progress" && evt.phase) onProgress(evt.phase);
+      else if (evt.type === "result" && evt.data) final = evt.data;
+    }
+  }
+
+  return (
+    final ?? { status: "error", message: "No response from the server." }
+  );
+}
+
 export async function ask(payload: AskRequest): Promise<AskResponse> {
   let res: Response;
   try {
