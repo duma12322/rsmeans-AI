@@ -25,6 +25,8 @@ export default function Home() {
   // Set while a clarification conversation is open; sent back as session_id.
   const [sessionId, setSessionId] = useState<string | null>(null);
   const feedEnd = useRef<HTMLDivElement>(null);
+  // Aborts the in-flight /ask/stream request when the user hits Stop.
+  const abortRef = useRef<AbortController | null>(null);
 
   function scrollToEnd() {
     requestAnimationFrame(() =>
@@ -44,25 +46,54 @@ export default function Home() {
     // of waiting for the response to arrive.
     scrollToEnd();
 
-    const res = await askStream(
-      sessionId ? { session_id: sessionId, answer: q } : { question: q },
-      (phase) =>
-        setTurns((t) =>
-          t.map((turn) => (turn.id === id ? { ...turn, phase } : turn))
-        )
-    );
+    const controller = new AbortController();
+    abortRef.current = controller;
 
-    setTurns((t) =>
-      t.map((turn) => (turn.id === id ? { ...turn, response: res } : turn))
-    );
-    setSessionId(
-      res.status === "needs_clarification" ? res.session_id : null
-    );
-    setLoading(false);
-    scrollToEnd();
+    try {
+      const res = await askStream(
+        sessionId ? { session_id: sessionId, answer: q } : { question: q },
+        (phase) =>
+          setTurns((t) =>
+            t.map((turn) => (turn.id === id ? { ...turn, phase } : turn))
+          ),
+        controller.signal
+      );
+
+      setTurns((t) =>
+        t.map((turn) => (turn.id === id ? { ...turn, response: res } : turn))
+      );
+      setSessionId(
+        res.status === "needs_clarification" ? res.session_id : null
+      );
+    } catch (e) {
+      // User cancelled: drop the pending turn so no orphan loading card lingers.
+      if ((e as Error)?.name === "AbortError") {
+        setTurns((t) => t.filter((turn) => turn.id !== id));
+      } else {
+        setTurns((t) =>
+          t.map((turn) =>
+            turn.id === id
+              ? {
+                  ...turn,
+                  response: { status: "error", message: "Something went wrong." },
+                }
+              : turn
+          )
+        );
+      }
+    } finally {
+      abortRef.current = null;
+      setLoading(false);
+      scrollToEnd();
+    }
+  }
+
+  function cancel() {
+    abortRef.current?.abort();
   }
 
   function reset() {
+    abortRef.current?.abort();
     setTurns([]);
     setSessionId(null);
     setInput("");
@@ -147,7 +178,11 @@ export default function Home() {
             {/* bot response */}
             <div>
               {turn.response ? (
-                <ResultView data={turn.response} onSuggest={submit} />
+                <ResultView
+                  data={turn.response}
+                  onSuggest={submit}
+                  onRetry={() => submit(turn.query)}
+                />
               ) : (
                 <LoadingCard phase={turn.phase} />
               )}
@@ -163,6 +198,7 @@ export default function Home() {
           value={input}
           onChange={setInput}
           onSubmit={() => submit()}
+          onCancel={cancel}
           loading={loading}
           clarifying={sessionId !== null}
         />

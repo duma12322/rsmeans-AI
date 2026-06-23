@@ -8,12 +8,14 @@ export function AskForm({
   value,
   onChange,
   onSubmit,
+  onCancel,
   loading,
   clarifying,
 }: {
   value: string;
   onChange: (v: string) => void;
   onSubmit: () => void;
+  onCancel: () => void;
   loading: boolean;
   clarifying: boolean;
 }) {
@@ -49,22 +51,32 @@ export function AskForm({
           className="w-full rounded-xl border border-slate-300 bg-white py-3 pl-10 pr-4 text-sm shadow-sm outline-none transition placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 disabled:opacity-60"
         />
       </div>
-      <button
-        type="submit"
-        disabled={loading || !value.trim()}
-        className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {loading ? (
-          <>
-            <Spinner /> Searching
-          </>
-        ) : clarifying ? (
-          "Answer"
-        ) : (
-          "Ask"
-        )}
-      </button>
+      {loading ? (
+        <button
+          type="button"
+          onClick={onCancel}
+          className="inline-flex items-center gap-2 rounded-xl border border-rose-300 bg-white px-5 py-3 text-sm font-medium text-rose-600 shadow-sm transition hover:bg-rose-50"
+        >
+          <StopIcon /> Stop
+        </button>
+      ) : (
+        <button
+          type="submit"
+          disabled={!value.trim()}
+          className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {clarifying ? "Answer" : "Ask"}
+        </button>
+      )}
     </form>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+    </svg>
   );
 }
 
@@ -77,11 +89,3 @@ function SearchIcon() {
   );
 }
 
-function Spinner() {
-  return (
-    <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
-    </svg>
-  );
-}

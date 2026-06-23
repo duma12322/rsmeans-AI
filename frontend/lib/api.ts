@@ -103,7 +103,8 @@ export type Phase =
 
 export async function askStream(
   payload: AskRequest,
-  onProgress: (phase: Phase) => void
+  onProgress: (phase: Phase) => void,
+  signal?: AbortSignal
 ): Promise<AskResponse> {
   let res: Response;
   try {
@@ -111,8 +112,12 @@ export async function askStream(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal,
     });
-  } catch {
+  } catch (e) {
+    // Caller aborted: re-throw so the UI can drop the turn instead of showing
+    // a misleading "backend unreachable" error.
+    if ((e as Error)?.name === "AbortError") throw e;
     return {
       status: "error",
       message:

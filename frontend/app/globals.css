@@ -22,3 +22,22 @@ body {
 .scroll-thin::-webkit-scrollbar-thumb {
   @apply rounded-full bg-slate-300;
 }
+
+/* "Copied" confirmation tag: pop in, then drift up and fade out. */
+@keyframes copied-float {
+  0% {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  20% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-14px);
+  }
+}
+.animate-copied {
+  animation: copied-float 1s ease-out forwards;
+}

@@ -1,5 +1,6 @@
 import type { Row } from "@/lib/api";
 import { currency, prettyLine } from "@/lib/format";
+import { CopyButton } from "./CopyButton";
 
 // The single, exact line the user asked for (direct code lookup). Highlighted
 // because it's THE answer, not one row among many.
@@ -10,9 +11,16 @@ export function MatchedLineCard({ row }: { row: Row }) {
         <span className="text-xs font-semibold uppercase tracking-wide text-indigo-700">
           Exact match
         </span>
-        <code className="font-mono text-xs text-indigo-700">
-          {prettyLine(row.line_number)}
-        </code>
+        <div className="flex items-center gap-2">
+          <code className="font-mono text-xs text-indigo-700">
+            {prettyLine(row.line_number)}
+          </code>
+          <CopyButton
+            text={prettyLine(row.line_number)}
+            title="Copy line number"
+            className="text-indigo-400 hover:text-indigo-700"
+          />
+        </div>
       </div>
 
       <div className="px-5 py-4">
@@ -41,15 +49,25 @@ function PriceTile({
   value: number | null;
   accent?: boolean;
 }) {
+  const hasValue = value !== null && value !== undefined && value !== 0;
   return (
     <div
-      className={`rounded-lg border px-4 py-3 ${
+      className={`group rounded-lg border px-4 py-3 ${
         accent
           ? "border-indigo-200 bg-white"
           : "border-slate-200 bg-slate-50/60"
       }`}
     >
-      <div className="text-xs text-slate-500">{label}</div>
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-slate-500">{label}</span>
+        {hasValue && (
+          <CopyButton
+            text={String(value)}
+            title={`Copy ${label.toLowerCase()}`}
+            className="opacity-0 group-hover:opacity-100 focus:opacity-100"
+          />
+        )}
+      </div>
       <div
         className={`mt-0.5 text-xl font-semibold tabular-nums ${
           accent ? "text-indigo-700" : "text-slate-800"

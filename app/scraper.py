@@ -455,9 +455,8 @@ async def scrape_route(question, route, progress=None):
 
     except Exception as e:  # noqa: BLE001 - any live-site failure -> useful error
         return _error(
-            "Hubo un problema al consultar RSMeans en vivo (login, carga de la "
-            "grilla o tiempo de espera agotado). Por favor intenta de nuevo en "
-            "un momento.",
+            "There was a problem querying RSMeans live (login, grid loading, or "
+            "a timeout). Please try again in a moment.",
             exc=e,
         )
     finally:
