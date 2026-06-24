@@ -27,6 +27,71 @@ def normalize(t):
 
 
 # =========================
+# LOGIN (VERIFIED)
+# =========================
+class LoginError(Exception):
+    """RSMeans rejected the login, the flow changed, or credentials are missing.
+
+    Raised instead of silently saving an invalid session and then scraping the
+    wrong grid — a stale/failed login must never look like success.
+    """
+
+
+async def perform_login(page, context, email, password):
+    """Log into RSMeans and verify it actually worked BEFORE caching the session.
+
+    The old flow just clicked through and waited a fixed 5s, so a wrong password
+    or a changed login page would still `save_session` and the scrape would walk
+    a grid behind a logged-out wall. Here we submit, then wait for the page to
+    settle into EITHER the post-login catalog link (success) or the site's
+    `#errorMessage` alert (e.g. "Invalid email or password") and raise on the
+    latter. Caller is expected to be on https://www.rsmeansonline.com/.
+    """
+    if not email or not password:
+        raise LoginError(
+            "RSMeans login no configurado: define RS_EMAIL y RS_PASSWORD en el "
+            "archivo .env."
+        )
+
+    await page.click("#btnLogin")
+    await page.fill("#username", email)
+    await page.click("button[type='submit']")
+    await page.fill("#password", password)
+    await page.click("#btnTerms")
+
+    # Wait until the page resolves into one of the two known outcomes: the
+    # logged-in catalog link, or the error alert. wait_for_selector defaults to
+    # state="visible", so the always-in-DOM-but-hidden error div won't match
+    # until it's actually shown.
+    try:
+        await page.wait_for_selector(
+            "#errorMessage, a#\\/SearchData",
+            timeout=20000,
+        )
+    except Exception as e:
+        raise LoginError(
+            "Tiempo de espera agotado durante el login de RSMeans (el flujo de "
+            "login pudo haber cambiado)."
+        ) from e
+
+    error_el = await page.query_selector("#errorMessage")
+    if error_el and await error_el.is_visible():
+        detail = normalize(await error_el.inner_text())
+        # El sitio responde en inglés ("Invalid email or password"); lo mostramos
+        # en español. El texto crudo del sitio queda en el log para diagnóstico.
+        if detail:
+            print(f"[login] RSMeans error message: {detail}")
+        if not detail or "invalid email or password" in detail.lower():
+            reason = "email o contraseña inválidos"
+        else:
+            reason = detail
+        raise LoginError(f"RSMeans rechazó el login: {reason}.")
+
+    # Verified: now it's safe to cache the session.
+    await save_session(context)
+
+
+# =========================
 # TREE READY
 # =========================
 async def wait_tree_ready(page):
@@ -65,7 +130,7 @@ async def get_cell_value(cell):
                 return val.strip()
 
         return ""
-    except:
+    except Exception:
         return ""
 
 
@@ -79,7 +144,7 @@ async def wait_rsmeans_data(page):
         await page.wait_for_response(lambda r:
             ("jqgrid" in r.url.lower() or "search" in r.url.lower())
         , timeout=15000)
-    except:
+    except Exception:
         pass
 
     # espera render DOM final
@@ -366,19 +431,11 @@ async def scrape_route(question, route, progress=None):
             # ================= LOGIN =================
             if not is_session_valid():
                 emit("login")  # sesion expirada: autenticando de nuevo
-                if not EMAIL or not PASSWORD:
-                    return _error(
-                        "RSMeans login no configurado: define RS_EMAIL y "
-                        "RS_PASSWORD en el archivo .env."
-                    )
-                await page.click("#btnLogin")
-                await page.fill("#username", EMAIL)
-                await page.click("button[type='submit']")
-                await page.fill("#password", PASSWORD)
-                await page.click("#btnTerms")
-
-                await page.wait_for_timeout(5000)
-                await save_session(context)
+                try:
+                    await perform_login(page, context, EMAIL, PASSWORD)
+                except LoginError as e:
+                    # Don't scrape behind a logged-out wall: surface the reason.
+                    return _error(str(e), exc=e)
 
             # ================= NAV =================
             await page.click("a#\\/SearchData")

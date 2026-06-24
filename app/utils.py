@@ -4,7 +4,7 @@ def validate_int(value, max_value):
         if v < 0 or v >= max_value:
             return None
         return v
-    except:
+    except (TypeError, ValueError):
         return None
 
 
@@ -29,5 +29,5 @@ def clean_number(value):
 
     try:
         return float(value)
-    except:
+    except (TypeError, ValueError):
         return 0.0

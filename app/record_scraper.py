@@ -35,10 +35,10 @@ import asyncio
 from playwright.async_api import async_playwright
 
 from app.scraper import (
-    EMAIL, PASSWORD, normalize, parse_nodes,
+    EMAIL, PASSWORD, normalize, parse_nodes, perform_login,
     wait_tree_ready, wait_rsmeans_data, scrape_grid,
 )
-from app.session import is_session_valid, save_session, SESSION_FILE
+from app.session import is_session_valid, SESSION_FILE
 from app.tree_loader import load_tree
 from app.keyword_extractor import generate as generate_keywords
 
@@ -170,13 +170,10 @@ async def _login_and_open_tree(page, context):
     await page.goto("https://www.rsmeansonline.com/")
 
     if not is_session_valid():
-        await page.click("#btnLogin")
-        await page.fill("#username", EMAIL)
-        await page.click("button[type='submit']")
-        await page.fill("#password", PASSWORD)
-        await page.click("#btnTerms")
-        await page.wait_for_timeout(5000)
-        await save_session(context)
+        # Verified login: raises LoginError (and skips save_session) on a bad
+        # password or a changed flow, so the long crawl fails loudly instead of
+        # scraping behind a logged-out wall.
+        await perform_login(page, context, EMAIL, PASSWORD)
 
     await page.click("a#\\/SearchData")
     await wait_tree_ready(page)

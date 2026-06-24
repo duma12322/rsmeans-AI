@@ -47,7 +47,7 @@ def is_session_valid():
             time.time() - ts
         ) < SESSION_EXPIRATION
 
-    except:
+    except (OSError, ValueError):
         return False
 
 

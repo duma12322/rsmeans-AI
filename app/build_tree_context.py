@@ -63,7 +63,7 @@ async def expand(node):
     try:
         await node.click()
         await asyncio.sleep(1.2)
-    except:
+    except Exception:
         pass
 
 
