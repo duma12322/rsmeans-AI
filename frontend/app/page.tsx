@@ -67,9 +67,24 @@ export default function Home() {
         res.status === "needs_clarification" ? res.session_id : null
       );
     } catch (e) {
-      // User cancelled: drop the pending turn so no orphan loading card lingers.
+      // User stopped the request: keep the turn (query + record) but swap the
+      // loading card for a "paused" notice instead of erasing everything.
       if ((e as Error)?.name === "AbortError") {
-        setTurns((t) => t.filter((turn) => turn.id !== id));
+        setTurns((t) =>
+          t.map((turn) =>
+            turn.id === id
+              ? {
+                  ...turn,
+                  phase: undefined,
+                  response: {
+                    status: "cancelled",
+                    message:
+                      "Query paused — you stopped this request before it finished.",
+                  },
+                }
+              : turn
+          )
+        );
       } else {
         setTurns((t) =>
           t.map((turn) =>

@@ -78,11 +78,20 @@ export interface ErrorResponse {
   message: string;
 }
 
+// Frontend-only status: the backend never returns this. It's synthesized when
+// the user stops an in-flight request, so the turn is kept (with a notice)
+// instead of being erased.
+export interface CancelledResponse {
+  status: "cancelled";
+  message: string;
+}
+
 export type AskResponse =
   | OkResponse
   | ClarifyResponse
   | SubjectResponse
-  | ErrorResponse;
+  | ErrorResponse
+  | CancelledResponse;
 
 export interface AskRequest {
   question?: string;
