@@ -7,13 +7,14 @@ import uuid
 import queue
 import asyncio
 import threading
+import unicodedata
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.scraper import start_browser
 from app.navigator import chapter_reference
@@ -133,15 +134,54 @@ class AskRequest(BaseModel):
     question: Optional[str] = Field(
         None,
         min_length=3,
+        max_length=500,
         description="Natural-language cost question (required to START a conversation).",
         examples=["Cost to paint interior walls"],
     )
     session_id: Optional[str] = Field(
-        None, description="Returned by a previous needs_clarification response; send it back to continue."
+        None,
+        pattern=r"^[0-9a-f]{12}$",
+        description="Returned by a previous needs_clarification response; send it back to continue.",
     )
     answer: Optional[str] = Field(
-        None, description="Your reply to the clarification questions."
+        None,
+        min_length=1,
+        max_length=500,
+        description="Your reply to the clarification questions.",
     )
+
+    @field_validator("question", "answer", mode="before")
+    @classmethod
+    def _normalize_text(cls, v):
+        """
+        Normalize free text BEFORE the length checks run: convert any whitespace
+        (newlines, tabs) to single spaces, drop other control characters, trim,
+        and treat blank / Swagger's literal "string" as absent (None).
+
+        It only ever touches whitespace and control chars — NEVER digits — so an
+        RSMeans code keeps every separator format intact ("09 91 23 72. 01 00",
+        "09 91 23 720100", … all survive; the digits-only extractor handles them
+        downstream).
+        """
+        if not isinstance(v, str):
+            return v
+        v = re.sub(r"\s+", " ", v)
+        v = "".join(ch for ch in v if ch == " " or not unicodedata.category(ch).startswith("C"))
+        v = v.strip()
+        if not v or v.lower() == "string":
+            return None
+        return v
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def _normalize_session(cls, v):
+        """Trim the session id and treat blank / Swagger's "string" as absent, so
+        the strict pattern only validates a real id."""
+        if isinstance(v, str):
+            v = v.strip()
+            if not v or v.lower() == "string":
+                return None
+        return v
 
 
 def _pick_item(answer, candidates):
