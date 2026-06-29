@@ -11,7 +11,7 @@ import unicodedata
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
@@ -92,7 +92,7 @@ def _drop_session(session_id):
         _SESSIONS.pop(session_id, None)
 
 
-def _run_scraper(question: str, start_path, progress=None):
+def _run_scraper(question: str, start_path, progress=None, cancel=None):
     if sys.platform == "win32":
         loop = asyncio.ProactorEventLoop()
     else:
@@ -100,7 +100,9 @@ def _run_scraper(question: str, start_path, progress=None):
     asyncio.set_event_loop(loop)
     try:
         return loop.run_until_complete(
-            start_browser(question, start_path=start_path, progress=progress)
+            start_browser(
+                question, start_path=start_path, progress=progress, cancel=cancel
+            )
         )
     finally:
         loop.close()
@@ -316,7 +318,7 @@ def _sse(obj) -> str:
 
 
 @app.post("/ask/stream")
-async def ask_stream(req: AskRequest):
+async def ask_stream(req: AskRequest, request: Request):
     """
     Same as /ask, but streams real progress milestones (Server-Sent Events) while
     the scraper runs, then a final `{"type":"result", "data": <ask-response>}`.
@@ -325,6 +327,12 @@ async def ask_stream(req: AskRequest):
     ("analyzing", "opening", "login", "navigating", "scraping") into a thread-safe
     queue that this generator drains on the event loop — no browser call moves
     onto the FastAPI loop.
+
+    Cancellation: a thread in the executor can't be killed, so when the client
+    disconnects (the user hits Stop) we set a threading.Event the scraper polls at
+    each phase boundary. It then unwinds, closes the browser, and frees the single
+    worker — instead of finishing the whole scrape in the background and blocking
+    the next request.
     """
     sid, sess, combined, error = _prepare_turn(req)
     if error is not None:
@@ -336,6 +344,7 @@ async def ask_stream(req: AskRequest):
 
     async def _gen():
         events: "queue.Queue" = queue.Queue()
+        cancel = threading.Event()
 
         # Called from the scraper thread; queue.put is thread-safe.
         def progress(phase, detail=None):
@@ -343,33 +352,47 @@ async def ask_stream(req: AskRequest):
 
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(
-            _executor, _run_scraper, combined, locked, progress
+            _executor, _run_scraper, combined, locked, progress, cancel
         )
-
-        # Relay progress events as they arrive; poll the queue without blocking
-        # the loop until the scrape finishes.
-        while not future.done():
-            try:
-                yield _sse(events.get_nowait())
-            except queue.Empty:
-                await asyncio.sleep(0.05)
-        # Flush any events queued in the final moment.
-        while True:
-            try:
-                yield _sse(events.get_nowait())
-            except queue.Empty:
-                break
+        # Retrieve any exception once the future settles so a cancelled scrape
+        # doesn't log an "exception was never retrieved" warning.
+        future.add_done_callback(lambda f: f.cancelled() or f.exception())
 
         try:
-            result = future.result()
-        except Exception as exc:  # noqa: BLE001 - surface as a result, not a 500
-            result = {
-                "status": "error",
-                "message": "Hubo un problema procesando la consulta.",
-                "error": str(exc),
-            }
-        final = _finalize_turn(sid, sess, result)
-        yield _sse({"type": "result", "data": final})
+            # Relay progress events as they arrive; poll the queue without blocking
+            # the loop. Also watch for the client going away so we can stop early.
+            while not future.done():
+                try:
+                    yield _sse(events.get_nowait())
+                except queue.Empty:
+                    if await request.is_disconnected():
+                        return  # `finally` signals the scraper to stop
+                    await asyncio.sleep(0.05)
+            # Flush any events queued in the final moment.
+            while True:
+                try:
+                    yield _sse(events.get_nowait())
+                except queue.Empty:
+                    break
+
+            try:
+                result = future.result()
+            except Exception as exc:  # noqa: BLE001 - surface as a result, not a 500
+                result = {
+                    "status": "error",
+                    "message": "Hubo un problema procesando la consulta.",
+                    "error": str(exc),
+                }
+            # A cooperatively-cancelled scrape returns this; the client is already
+            # gone, so just stop without finalizing the turn.
+            if isinstance(result, dict) and result.get("status") == "cancelled":
+                return
+            final = _finalize_turn(sid, sess, result)
+            yield _sse({"type": "result", "data": final})
+        finally:
+            # Generator closed early (client disconnected, GeneratorExit) or we
+            # returned on is_disconnected: tell the still-running scraper to stop.
+            cancel.set()
 
     return StreamingResponse(
         _gen(),

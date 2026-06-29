@@ -4,6 +4,7 @@ from app.tree_loader import load_tree
 from app.tree_ai import choose_node
 from app.knowledge_layer import formatting_guidance
 from app.knowledge_records import resolve_code, search_items
+from app.cancellation import check_cancel
 
 TREE = load_tree()
 
@@ -558,7 +559,7 @@ def _unknown_code_response(code):
 # =========================
 # BEAM SEARCH (BACKTRACKING)
 # =========================
-def find_path(question, start_path=None, beam_width=3, max_depth=10):
+def find_path(question, start_path=None, beam_width=3, max_depth=10, cancel=None):
     """
     Walk the tree to a leaf using beam search instead of a greedy per-level
     pick, so a single bad guess high up no longer dooms the whole route.
@@ -580,6 +581,10 @@ def find_path(question, start_path=None, beam_width=3, max_depth=10):
 
     Returns a dict with path / hops / confidence / clarifications /
     fallback_used, or None if the tree is empty / unreachable.
+
+    `cancel` (a threading.Event) makes the search COOPERATIVELY interruptible: it's
+    polled before each AI hop, so when the client disconnects the beam search stops
+    instead of running every remaining `choose_node` call. Raises ScrapeCancelled.
     """
     # Fast path: the user pasted an explicit RSMeans code. A code is an exact
     # identifier, so resolve it against route_items.json instead of letting the
@@ -678,6 +683,10 @@ def find_path(question, start_path=None, beam_width=3, max_depth=10):
         expansions = []
 
         for cand in beam:
+            # Stop deliberating if the client went away: the next AI hop is the
+            # expensive part, so check right before it.
+            check_cancel(cancel)
+
             options = format_options(get_children(cand["path"]))
             here = " > ".join(cand["path"]) if cand["path"] else "ROOT"
 

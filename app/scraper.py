@@ -11,6 +11,7 @@ from app.navigator import (
 )
 from app.session import is_session_valid, save_session, SESSION_FILE
 from app.config import RS_EMAIL, RS_PASSWORD
+from app.cancellation import ScrapeCancelled, check_cancel as _check_cancel
 
 
 # RSMeans credentials, read from .env (RS_EMAIL / RS_PASSWORD). Re-exported under
@@ -315,17 +316,19 @@ async def parse_nodes(nodes):
 # =========================
 # NAVIGATE A CHOSEN PATH (VARIABLE DEPTH)
 # =========================
-async def navigate_path(page, path):
+async def navigate_path(page, path, cancel=None):
     """
     Click down the tree following the codes in `path`, to whatever depth the
     leaf lives at (no hardcoded number of levels).
 
-    Returns True if every code was found and clicked, False otherwise.
+    Returns True if every code was found and clicked, False otherwise. Checks the
+    cancel token before each hop so a paused request stops mid-walk.
     """
     nodes = await page.query_selector_all("#leftTreeMenu > ul > li")
     siblings = await parse_nodes(nodes)
 
     for code in path:
+        _check_cancel(cancel)
         by_code = {n["code"]: n for n in siblings}
         target = by_code.get(code)
         if not target:
@@ -345,7 +348,7 @@ async def navigate_path(page, path):
 # =========================
 # ROUTING (OFFLINE, NO BROWSER)
 # =========================
-def route_question(question, start_path=None):
+def route_question(question, start_path=None, cancel=None):
     """
     Decide the route fully offline — no browser. Returns (route, clarification):
 
@@ -359,8 +362,11 @@ def route_question(question, start_path=None):
 
     Doing this BEFORE launching Chromium means clarification turns are fast and
     never open a browser — the browser only ever walks a single chosen path.
+
+    `cancel` (a threading.Event) lets the beam search stop deliberating mid-way
+    when the client disconnects, instead of running every AI hop first.
     """
-    route = find_path(question, start_path=start_path)
+    route = find_path(question, start_path=start_path, cancel=cancel)
 
     # Text-match candidates: present the real items found, not divisions.
     if route and route.get("match_type") == "item" and route.get("ambiguous"):
@@ -384,7 +390,7 @@ def route_question(question, start_path=None):
 # =========================
 # SCRAPE A CONFIDENT ROUTE (BROWSER)
 # =========================
-async def scrape_route(question, route, progress=None):
+async def scrape_route(question, route, progress=None, cancel=None):
     """
     Open the browser, walk the already-chosen route, scrape and return.
 
@@ -392,6 +398,11 @@ async def scrape_route(question, route, progress=None):
     path code missing from the live tree) is caught and turned into a useful
     `status: "error"` response instead of a raw exception that would kill the
     request with no message. The browser is always closed.
+
+    `cancel` is an optional threading.Event: when the API marks it (client
+    disconnected), the next checkpoint raises ScrapeCancelled, the browser is
+    closed in `finally`, and we return a `status: "cancelled"` response instead of
+    finishing the whole scrape in the background.
     """
     init_db()
     emit = progress or (lambda *a, **k: None)
@@ -417,6 +428,7 @@ async def scrape_route(question, route, progress=None):
     try:
         async with async_playwright() as p:
 
+            _check_cancel(cancel)
             emit("opening")  # entrando al sitio en vivo de RSMeans
             browser = await p.chromium.launch(headless=False)
 
@@ -430,6 +442,7 @@ async def scrape_route(question, route, progress=None):
 
             # ================= LOGIN =================
             if not is_session_valid():
+                _check_cancel(cancel)
                 emit("login")  # sesion expirada: autenticando de nuevo
                 try:
                     await perform_login(page, context, EMAIL, PASSWORD)
@@ -438,6 +451,7 @@ async def scrape_route(question, route, progress=None):
                     return _error(str(e), exc=e)
 
             # ================= NAV =================
+            _check_cancel(cancel)
             await page.click("a#\\/SearchData")
 
             await wait_tree_ready(page)
@@ -447,7 +461,7 @@ async def scrape_route(question, route, progress=None):
 
             # ================= NAVIGATE THE CHOSEN PATH (VARIABLE DEPTH) =======
             emit("navigating")  # recorriendo la ruta elegida en el catalogo
-            navigated = await navigate_path(page, path)
+            navigated = await navigate_path(page, path, cancel=cancel)
             if not navigated:
                 # A code in our snapshot path was not found in the live tree
                 # (tree.json went stale). Don't scrape the wrong grid — say so.
@@ -458,6 +472,7 @@ async def scrape_route(question, route, progress=None):
                 )
 
             # IMPORTANT: WAIT FOR REAL DATA
+            _check_cancel(cancel)
             emit("scraping")  # esperando y leyendo la grilla de precios en vivo
             await wait_rsmeans_data(page)
 
@@ -510,6 +525,15 @@ async def scrape_route(question, route, progress=None):
                 "clarify_questions": route.get("clarify_questions", []),
             }
 
+    except ScrapeCancelled:
+        # Client disconnected (Stop in the UI): unwind to `finally` to close the
+        # browser. Not an error — don't log it; the caller discards this response.
+        print("[scrape] cancelado por el cliente (peticion pausada)")
+        return {
+            "status": "cancelled",
+            "message": "Consulta pausada: el cliente detuvo la peticion.",
+            "path": path,
+        }
     except Exception as e:  # noqa: BLE001 - any live-site failure -> useful error
         return _error(
             "There was a problem querying RSMeans live (login, grid loading, or "
@@ -527,10 +551,20 @@ async def scrape_route(question, route, progress=None):
 # =========================
 # SINGLE-SHOT ENTRY (route offline first, browser only if confident)
 # =========================
-async def start_browser(question, start_path=None, progress=None):
+async def start_browser(question, start_path=None, progress=None, cancel=None):
     emit = progress or (lambda *a, **k: None)
-    emit("analyzing")  # IA recorriendo el arbol offline (todavia sin navegador)
-    route, clarification = route_question(question, start_path=start_path)
-    if clarification is not None:
-        return clarification
-    return await scrape_route(question, route, progress=progress)
+    try:
+        emit("analyzing")  # IA recorriendo el arbol offline (todavia sin navegador)
+        _check_cancel(cancel)
+        route, clarification = route_question(question, start_path=start_path, cancel=cancel)
+        if clarification is not None:
+            return clarification
+        return await scrape_route(question, route, progress=progress, cancel=cancel)
+    except ScrapeCancelled:
+        # Cancelled during offline analysis (before the browser opened): nothing
+        # to clean up. scrape_route handles cancellation during the browser phase.
+        print("[analysis] cancelado por el cliente (peticion pausada)")
+        return {
+            "status": "cancelled",
+            "message": "Consulta pausada: el cliente detuvo la peticion.",
+        }
