@@ -40,6 +40,9 @@ export interface OkResponse {
   rows: Row[];
   matched_line: Row | null;
   path: string[];
+  // Same route as `path`, but each level carries its name so the UI can show
+  // "23 - Electrical › 2301 - …" instead of bare codes.
+  breadcrumb?: DivisionCandidate[];
   final_code: string;
   final_name: string;
   confidence: Confidence;

@@ -15,13 +15,18 @@ def init_db():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT,
                 question TEXT,
                 c3 TEXT,
                 c4 TEXT,
                 final_code TEXT,
                 final_name TEXT,
+                path TEXT,
                 line_number TEXT,
-                data TEXT
+                description TEXT,
+                unit TEXT,
+                bare_total REAL,
+                total_op REAL
             )
         """)
 
@@ -38,10 +43,20 @@ def init_db():
             )
         """)
 
-        # Add line_number to pre-existing tables (older DBs created before this column).
+        # Additively migrate older DBs to the split-column schema. Each column is
+        # added only if missing, so this is safe to run on any existing data.db.
         cols = [row[1] for row in cur.execute("PRAGMA table_info(results)").fetchall()]
-        if "line_number" not in cols:
-            cur.execute("ALTER TABLE results ADD COLUMN line_number TEXT")
+        for name, decl in (
+            ("created_at", "TEXT"),
+            ("path", "TEXT"),
+            ("line_number", "TEXT"),
+            ("description", "TEXT"),
+            ("unit", "TEXT"),
+            ("bare_total", "REAL"),
+            ("total_op", "REAL"),
+        ):
+            if name not in cols:
+                cur.execute(f"ALTER TABLE results ADD COLUMN {name} {decl}")
 
 
 def log_error(question, path, message, error=None):
@@ -63,22 +78,34 @@ def log_error(question, path, message, error=None):
         print(f"[db] no se pudo registrar el error: {e}")
 
 
-def save_to_db(rows, question, c3, c4, final_code, final_name):
+def save_to_db(rows, question, c3, c4, final_code, final_name, path=None):
+    """Persist each scraped grid row as its own typed record. Costs are stored as
+    REAL numbers (no `$`); formatting for display happens at the edge, not here.
+    `path` is the full route (list of codes) the row came from, stored as a
+    "a > b > c" string so a saved result is self-describing."""
+    created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    path_str = " > ".join(path) if path else None
     with closing(sqlite3.connect(DB_PATH)) as conn, conn:
         conn.executemany("""
             INSERT INTO results (
-                question, c3, c4, final_code, final_name, line_number, data
+                created_at, question, c3, c4, final_code, final_name, path,
+                line_number, description, unit, bare_total, total_op
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [
             (
+                created_at,
                 question,
                 c3,
                 c4,
                 final_code,
                 final_name,
+                path_str,
                 r.get("line_number"),
-                str(r),
+                r.get("description"),
+                r.get("unit"),
+                r.get("bare_total"),
+                r.get("total_op"),
             )
             for r in rows
         ])

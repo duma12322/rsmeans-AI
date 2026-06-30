@@ -74,7 +74,7 @@ export function ResultView({
           <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
             {data.final_name}
           </h2>
-          <PathBreadcrumb path={data.path} />
+          <PathBreadcrumb path={data.path} breadcrumb={data.breadcrumb} />
         </div>
         <ConfidenceBadge value={data.confidence} />
       </div>

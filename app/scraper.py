@@ -2,7 +2,7 @@ import asyncio
 from playwright.async_api import async_playwright
 
 from app.db import init_db, save_to_db, log_error
-from app.utils import clean_number
+from app.utils import clean_number, format_currency
 from app.navigator import (
     find_path,
     needs_clarification,
@@ -269,6 +269,25 @@ def match_scraped_line(rows, code):
     return prefix_hit
 
 
+def _with_display(row):
+    """Attach human-readable currency strings to a scraped row without losing the
+    raw numeric values. The frontend can show `*_display` (e.g. "$1,234.50") and
+    still keep `bare_total`/`total_op` for sorting or math."""
+    if not row:
+        return row
+    return {
+        **row,
+        "bare_total_display": format_currency(row.get("bare_total")),
+        "total_op_display": format_currency(row.get("total_op")),
+    }
+
+
+def build_breadcrumb(hops):
+    """The chosen route as an ordered list of {code, name} so the frontend can
+    render the taxonomy path specifically (e.g. "23 - Electrical" > "2301 - ...")."""
+    return [{"code": h["code"], "name": h["name"]} for h in hops]
+
+
 def filter_rows_by_code(rows, code):
     """
     Keep only the rows whose visible Line Number starts with the requested code
@@ -487,6 +506,7 @@ async def scrape_route(question, route, progress=None, cancel=None):
                     c4=path[-1],
                     final_code=path[-1],
                     final_name=final_name,
+                    path=path,
                 )
 
             # If the user asked for an explicit code (direct code lookup), narrow
@@ -515,8 +535,9 @@ async def scrape_route(question, route, progress=None, cancel=None):
 
             return {
                 "status": "ok",
-                "rows": rows,
-                "matched_line": matched_line,
+                "rows": [_with_display(r) for r in rows],
+                "matched_line": _with_display(matched_line),
+                "breadcrumb": build_breadcrumb(hops),
                 "path": path,
                 "final_code": path[-1],
                 "final_name": final_name,

@@ -422,10 +422,14 @@ def _route_from_leaf(hit):
     # An exact/prefix line is a confident pinpoint; a section match is only the
     # right grid (the exact line wasn't in our snapshot), so soften confidence.
     confidence = "medium" if hit["match"] == "section" else "high"
+    # Name EVERY level from the tree so the breadcrumb reads "26 - Electrical >
+    # 2656 - … > 265613.10 - Lighting Poles", not bare codes. The leaf prefers the
+    # resolver's name (the catalog leaf) and falls back to the tree node name.
     hops = [
         {
             "code": c,
-            "name": hit["name"] if i == len(path) - 1 else "",
+            "name": (hit["name"] if i == len(path) - 1 else "")
+                    or _node_name(path[:i + 1]),
             "confidence": confidence,
             "clarify_questions": [],
             "rank": 0,

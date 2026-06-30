@@ -73,8 +73,11 @@ function PriceTile({
         )}
       </div>
       <div
+        title={hasValue ? undefined : "No published price for this line"}
         className={`mt-0.5 text-xl font-semibold tabular-nums ${
-          accent
+          !hasValue
+            ? "text-slate-400 dark:text-slate-500"
+            : accent
             ? "text-indigo-700 dark:text-indigo-300"
             : "text-slate-800 dark:text-slate-200"
         }`}

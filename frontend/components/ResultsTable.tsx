@@ -240,7 +240,10 @@ export function ResultsTable({
                       {currency(r.bare_total)}
                     </Cell>
                   ) : (
-                    <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums text-slate-700 dark:text-slate-300">
+                    <td
+                      title="No published bare price for this row"
+                      className="whitespace-nowrap px-4 py-2 text-right tabular-nums text-slate-400 dark:text-slate-500"
+                    >
                       {currency(r.bare_total)}
                     </td>
                   )}
@@ -253,7 +256,10 @@ export function ResultsTable({
                       {currency(r.total_op)}
                     </Cell>
                   ) : (
-                    <td className="whitespace-nowrap px-4 py-2 text-right font-medium tabular-nums text-slate-900 dark:text-slate-100">
+                    <td
+                      title="No published O&P price for this row"
+                      className="whitespace-nowrap px-4 py-2 text-right font-medium tabular-nums text-slate-400 dark:text-slate-500"
+                    >
                       {currency(r.total_op)}
                     </td>
                   )}
