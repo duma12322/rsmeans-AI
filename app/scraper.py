@@ -131,7 +131,10 @@ async def get_cell_value(cell):
                 return val.strip()
 
         return ""
-    except Exception:
+    except Exception as e:
+        # Tolerate an unreadable cell (don't blow up the whole scrape) but leave a
+        # trace: a silent "" here used to hide RSMeans DOM changes / detached nodes.
+        print(f"[scraper] no se pudo leer una celda (devuelvo vacio): {e}")
         return ""
 
 
@@ -145,8 +148,12 @@ async def wait_rsmeans_data(page):
         await page.wait_for_response(lambda r:
             ("jqgrid" in r.url.lower() or "search" in r.url.lower())
         , timeout=15000)
-    except Exception:
-        pass
+    except Exception as e:
+        # The XHR may have fired before we started listening, so this isn't fatal —
+        # we still wait on the DOM below. But log it: a timeout here can also mean
+        # the grid never loaded, and we don't want that to pass unnoticed.
+        print(f"[scraper] no observe la XHR de jqGrid/search en 15s "
+              f"(sigo esperando el DOM): {e}")
 
     # espera render DOM final
     await page.wait_for_function("""
@@ -335,31 +342,65 @@ async def parse_nodes(nodes):
 # =========================
 # NAVIGATE A CHOSEN PATH (VARIABLE DEPTH)
 # =========================
-async def navigate_path(page, path, cancel=None):
+async def _read_level(page, parent):
+    """(Re)read the nodes that make up the current tree level: the root list when
+    `parent` is None, otherwise the children of the node we last opened. Used both
+    for the initial read and to refresh a level that a slow render left stale."""
+    if parent is None:
+        nodes = await page.query_selector_all("#leftTreeMenu > ul > li")
+    else:
+        nodes = await parent.query_selector_all(":scope > ul > li")
+    return await parse_nodes(nodes)
+
+
+async def navigate_path(page, path, cancel=None, retries=2):
     """
     Click down the tree following the codes in `path`, to whatever depth the
     leaf lives at (no hardcoded number of levels).
 
     Returns True if every code was found and clicked, False otherwise. Checks the
     cancel token before each hop so a paused request stops mid-walk.
+
+    Each hop is retried with exponential backoff: a click that times out or a
+    child level that hasn't rendered yet is usually just slowness, so we back off
+    and re-read the level instead of letting one hiccup doom the whole walk.
     """
-    nodes = await page.query_selector_all("#leftTreeMenu > ul > li")
-    siblings = await parse_nodes(nodes)
+    parent = None  # node whose children are the current level; None == root
+    siblings = await _read_level(page, parent)
 
     for code in path:
         _check_cancel(cancel)
-        by_code = {n["code"]: n for n in siblings}
-        target = by_code.get(code)
-        if not target:
-            print(f"[navigate] code {code} not found in current level")
-            return False
 
-        await target["node"].click()
-        await page.wait_for_timeout(1200)
+        for attempt in range(retries + 1):
+            _check_cancel(cancel)
+            try:
+                by_code = {n["code"]: n for n in siblings}
+                target = by_code.get(code)
+                if target is None:
+                    # May just not have rendered yet after the previous click;
+                    # treat as transient so the retry below re-reads the level.
+                    raise LookupError(f"code {code} not in current level yet")
 
-        # Children of the node we just opened become the next level.
-        child_nodes = await target["node"].query_selector_all(":scope > ul > li")
-        siblings = await parse_nodes(child_nodes)
+                await target["node"].click()
+                await page.wait_for_timeout(1200)
+
+                # Children of the node we just opened become the next level.
+                siblings = await _read_level(page, target["node"])
+                parent = target["node"]
+                break  # hop succeeded
+            except ScrapeCancelled:
+                raise
+            except Exception as e:
+                print(f"[navigate] hop {code} fallo "
+                      f"(intento {attempt + 1}/{retries + 1}): {e}")
+                if attempt >= retries:
+                    print(f"[navigate] code {code} irrecuperable tras "
+                          f"{retries + 1} intentos -> abandono la ruta")
+                    return False
+                await page.wait_for_timeout(int(1000 * (2 ** attempt)))
+                # Refresh the current level from the DOM in case a slow render is
+                # why the node was missing or the click didn't take.
+                siblings = await _read_level(page, parent)
 
     return True
 
@@ -565,8 +606,10 @@ async def scrape_route(question, route, progress=None, cancel=None):
         if browser is not None:
             try:
                 await browser.close()
-            except Exception:
-                pass
+            except Exception as e:
+                # A failed close shouldn't mask the real result, but log it so a
+                # leaked browser process isn't completely invisible.
+                print(f"[scraper] error al cerrar el navegador (ignorado): {e}")
 
 
 # =========================

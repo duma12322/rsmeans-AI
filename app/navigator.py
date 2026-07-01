@@ -1,4 +1,5 @@
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from app.tree_loader import load_tree
 from app.tree_ai import choose_node
@@ -563,6 +564,37 @@ def _unknown_code_response(code):
 # =========================
 # BEAM SEARCH (BACKTRACKING)
 # =========================
+def _rank_level(question, to_decide):
+    """Rank the children for every live beam path at one depth, concurrently.
+
+    Each `choose_node` call is a blocking request to the model, and the calls for
+    the different live paths are independent of one another: they share no state
+    and are only compared afterwards by cost. So we fan them out across threads —
+    the level now costs the slowest single call instead of the sum of all of them,
+    without changing any routing decision. Results are returned in the SAME order
+    as `to_decide`, so the capture/expansion downstream stays deterministic (the
+    eval must be identical before and after this change).
+
+    `to_decide` is a list of `(cand, options)` for the paths that have children;
+    leaves are handled by the caller and never reach here.
+    """
+    if not to_decide:
+        return []
+    # Avoid the thread-pool overhead when there's nothing to parallelize (e.g. the
+    # root level, or once the beam narrows to a single live path near the leaves).
+    if len(to_decide) == 1:
+        cand, options = to_decide[0]
+        return [choose_node(question, options, cand["path"])]
+    # choose_node never raises (it catches network/parse errors and returns a
+    # low-confidence fallback), so f.result() here won't blow up the search.
+    with ThreadPoolExecutor(max_workers=len(to_decide)) as pool:
+        futures = [
+            pool.submit(choose_node, question, options, cand["path"])
+            for cand, options in to_decide
+        ]
+        return [f.result() for f in futures]
+
+
 def find_path(question, start_path=None, beam_width=3, max_depth=10, cancel=None):
     """
     Walk the tree to a leaf using beam search instead of a greedy per-level
@@ -686,9 +718,12 @@ def find_path(question, start_path=None, beam_width=3, max_depth=10, cancel=None
     for depth in range(max_depth):
         expansions = []
 
+        # Split the beam into leaves (done) and paths that still need an AI hop.
+        # Reading children is offline and cheap; the AI hop is the expensive part.
+        to_decide = []
         for cand in beam:
-            # Stop deliberating if the client went away: the next AI hop is the
-            # expensive part, so check right before it.
+            # Stop deliberating if the client went away: check right before the
+            # (batched) AI hops, the expensive part of the level.
             check_cancel(cancel)
 
             options = format_options(get_children(cand["path"]))
@@ -700,7 +735,16 @@ def find_path(question, start_path=None, beam_width=3, max_depth=10, cancel=None
                 completed.append(cand)
                 continue
 
-            result = choose_node(question, options, cand["path"])
+            to_decide.append((cand, options))
+
+        # Rank every live path's children at once. The calls are independent, so
+        # this fans them out across threads (see _rank_level): the level costs the
+        # slowest call, not the sum. Results come back in `to_decide` order, so the
+        # capture + expansion below stay deterministic.
+        results = _rank_level(question, to_decide)
+
+        for (cand, options), result in zip(to_decide, results):
+            here = " > ".join(cand["path"]) if cand["path"] else "ROOT"
             by_code = {o["code"]: o["name"] for o in options}
 
             # If the AI returned nothing usable, fall back to the raw option
