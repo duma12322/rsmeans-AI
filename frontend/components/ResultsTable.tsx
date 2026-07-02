@@ -11,10 +11,11 @@ type SortDir = "asc" | "desc";
 
 const num = (v: number | null | undefined) => v ?? 0;
 
-// How many rows we show before collapsing the rest behind a "show all" toggle.
-// A keyword search can return hundreds of lines; 50 keeps the first screen
-// scannable while the button reveals everything on demand.
+// How many rows we show before the "show more" button appears, and how many
+// each click reveals after that. A keyword search can return up to 500 lines;
+// 50 keeps the first screen scannable, then the user pulls them in 100-row steps.
 const COLLAPSED_LIMIT = 50;
+const STEP = 100;
 
 // The full grid of line-items under the chosen section. Filterable by text and
 // sortable by any column. Click any value cell (code, unit, totals) to copy it;
@@ -29,7 +30,8 @@ export function ResultsTable({
   const [copied, setCopied] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
-  const [expanded, setExpanded] = useState(false);
+  // How many rows are currently revealed; grows by STEP per "show more" click.
+  const [visibleCount, setVisibleCount] = useState(COLLAPSED_LIMIT);
 
   const hl = (highlightLine || "").replace(/\D/g, "");
 
@@ -72,12 +74,14 @@ export function ResultsTable({
     return out;
   }, [rows, filter, sort]);
 
-  // Collapse the tail: show the first COLLAPSED_LIMIT rows until the user opts to
-  // see everything. The cap runs AFTER filter/sort, so "show all" reveals the
-  // rest of the *current* view, not the raw list.
-  const collapsible = view.length > COLLAPSED_LIMIT;
-  const shown = expanded || !collapsible ? view : view.slice(0, COLLAPSED_LIMIT);
+  // Reveal the first `visibleCount` rows and pull the rest in STEP-sized steps.
+  // The cap runs AFTER filter/sort, so "show more" reveals the rest of the
+  // *current* view, not the raw list.
+  const shown = view.slice(0, visibleCount);
   const hiddenCount = view.length - shown.length;
+  const nextStep = Math.min(STEP, hiddenCount);
+  const canExpand = hiddenCount > 0;
+  const canCollapse = visibleCount > COLLAPSED_LIMIT && view.length > COLLAPSED_LIMIT;
 
   if (!rows?.length) {
     return (
@@ -296,21 +300,30 @@ export function ResultsTable({
                 </td>
               </tr>
             )}
-            {collapsible && (
+            {(canExpand || canCollapse) && (
               <tr>
                 <td colSpan={6} className="px-4 py-3 text-center">
-                  <button
-                    type="button"
-                    onClick={() => setExpanded((e) => !e)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-indigo-400 hover:text-indigo-700 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-indigo-500 dark:hover:text-indigo-300"
-                  >
-                    {expanded ? (
-                      <>Show fewer<Chevron up /></>
-                    ) : (
-                      <>Show all {view.length}<Chevron /></>
+                  <div className="inline-flex items-center gap-2">
+                    {canExpand && (
+                      <button
+                        type="button"
+                        onClick={() => setVisibleCount((v) => v + STEP)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-indigo-400 hover:text-indigo-700 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-indigo-500 dark:hover:text-indigo-300"
+                      >
+                        Show {nextStep} more<Chevron />
+                      </button>
                     )}
-                  </button>
-                  {!expanded && (
+                    {canCollapse && (
+                      <button
+                        type="button"
+                        onClick={() => setVisibleCount(COLLAPSED_LIMIT)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-indigo-400 hover:text-indigo-700 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-indigo-500 dark:hover:text-indigo-300"
+                      >
+                        Show fewer<Chevron up />
+                      </button>
+                    )}
+                  </div>
+                  {canExpand && (
                     <span className="ml-2 text-xs text-slate-400 dark:text-slate-500">
                       {hiddenCount} more hidden
                     </span>

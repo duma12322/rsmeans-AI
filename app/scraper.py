@@ -1,4 +1,5 @@
 import asyncio
+import re
 from playwright.async_api import async_playwright
 
 from app.db import init_db, save_to_db, log_error
@@ -218,10 +219,10 @@ async def _col_value(row, col_id):
     return normalize(await get_cell_value(cell))
 
 
-async def scrape_grid(page):
-
-    await wait_rsmeans_data(page)
-
+async def _read_grid_rows(page):
+    """Read the line-items currently rendered in the jqGrid body — no waiting.
+    Split out from scrape_grid so the search path can re-read the grid after it
+    asks for a bigger page, without paying wait_rsmeans_data's XHR wait again."""
     rows = await page.query_selector_all(
         "table.ui-jqgrid-btable tr.jqgrow"
     )
@@ -245,6 +246,68 @@ async def scrape_grid(page):
         })
 
     return data
+
+
+async def scrape_grid(page):
+    await wait_rsmeans_data(page)
+    return await _read_grid_rows(page)
+
+
+# =========================
+# SEARCH RESULT COUNT / PAGE SIZE
+# =========================
+# The site's own results counter reads "Total 719 records found". Above this many
+# hits we pull more than the default first page (up to SEARCH_MAX_ROWS); above the
+# max we stop and tell the user to narrow the search instead of dumping thousands.
+SEARCH_BUMP_THRESHOLD = 50
+SEARCH_MAX_ROWS = 500
+
+
+async def _read_total_records(page):
+    """Parse the grid pager's 'Total N records found' counter. Returns the int,
+    or None when it isn't present/parseable (then we just scrape the first page)."""
+    try:
+        el = await page.query_selector(".ui-paging-info")
+        if not el:
+            return None
+        txt = (await el.inner_text()) or ""
+        m = re.search(r"(\d[\d,]*)\s*records", txt, re.I) or re.search(r"(\d[\d,]*)", txt)
+        return int(m.group(1).replace(",", "")) if m else None
+    except Exception as e:  # noqa: BLE001
+        print(f"[search] no pude leer el contador de resultados: {e}")
+        return None
+
+
+async def _load_more_rows(page, target):
+    """Ask the jqGrid to fetch up to `target` rows in a single page and reload, so
+    it renders more than the default first page. The grid id is 'grid' — the same
+    prefix the column ids use (aria-describedby='grid_<Column>')."""
+    await page.evaluate(
+        """(n) => {
+            if (window.jQuery && jQuery('#grid').length) {
+                jQuery('#grid').jqGrid('setGridParam', {rowNum: n, page: 1})
+                               .trigger('reloadGrid');
+            }
+        }""",
+        target,
+    )
+
+
+async def _wait_row_count(page, at_least, timeout=40000):
+    """Wait until the grid has rendered at least `at_least` rows (after a bigger
+    page was requested), then let the render settle. Best-effort: on timeout we
+    scrape whatever loaded rather than fail the search."""
+    try:
+        await page.wait_for_function(
+            "(n) => document.querySelectorAll("
+            "'table.ui-jqgrid-btable tr.jqgrow').length >= n",
+            arg=at_least,
+            timeout=timeout,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[search] no alcance {at_least} filas a tiempo "
+              f"(sigo con las cargadas): {e}")
+    await page.wait_for_timeout(1500)
 
 
 # =========================
@@ -684,7 +747,32 @@ async def scrape_search(question, term, progress=None, cancel=None):
 
             _check_cancel(cancel)
             emit("scraping")
-            rows = await scrape_grid(page)
+
+            # The first page is in. Read the site's own counter to decide how many
+            # rows to pull: <=50 -> the first page is fine; >50 -> load up to
+            # SEARCH_MAX_ROWS; beyond that -> load the cap and tell the user to
+            # narrow the search.
+            await wait_rsmeans_data(page)
+            total = await _read_total_records(page)
+            truncated = False
+            notice = None
+
+            if total is not None and total > SEARCH_BUMP_THRESHOLD:
+                target = min(total, SEARCH_MAX_ROWS)
+                print(f">>> {total} registros encontrados -> cargo hasta {target} filas")
+                _check_cancel(cancel)
+                await _load_more_rows(page, target)
+                await _wait_row_count(page, min(target, total))
+                truncated = total > SEARCH_MAX_ROWS
+
+            rows = await _read_grid_rows(page)
+
+            if truncated:
+                notice = (
+                    f"Found {total:,} matches — showing the first {len(rows)}. "
+                    "That's a lot to be exact about; add more detail (the object, "
+                    "material, size, or type) to get a shorter, more precise list."
+                )
 
             if rows:
                 save_to_db(
@@ -692,7 +780,9 @@ async def scrape_search(question, term, progress=None, cancel=None):
                     final_code=None, final_name=f"search: {term}", path=None,
                 )
 
-            print(f">>> BUSQUEDA {term!r} -> {len(rows)} resultado(s)")
+            print(f">>> BUSQUEDA {term!r} -> {len(rows)} fila(s) de "
+                  f"{total if total is not None else '?'} totales"
+                  f"{' (truncado, pido acotar)' if truncated else ''}")
             return {
                 "status": "ok",
                 "mode": "search",
@@ -706,6 +796,10 @@ async def scrape_search(question, term, progress=None, cancel=None):
                 "confidence": "high",
                 "fallback_used": False,
                 "clarify_questions": [],
+                "total_records": total,
+                "shown_records": len(rows),
+                "truncated": truncated,
+                "notice": notice,
             }
 
     except ScrapeCancelled:

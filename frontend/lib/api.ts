@@ -53,6 +53,15 @@ export interface OkResponse {
   fallback_used: boolean;
   clarify_questions: string[];
   session_id?: string;
+  // Present on keyword-search results (mode === "search"). `total_records` is the
+  // site's own hit count; when it exceeds the cap we return the first
+  // `shown_records`, set `truncated`, and put an explanatory line in `notice`.
+  mode?: "search";
+  search_term?: string;
+  total_records?: number | null;
+  shown_records?: number;
+  truncated?: boolean;
+  notice?: string | null;
 }
 
 // status === "needs_clarification": ambiguous, candidates + follow-up questions.
