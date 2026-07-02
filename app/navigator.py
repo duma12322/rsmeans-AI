@@ -2,7 +2,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 
 from app.tree_loader import load_tree
-from app.tree_ai import choose_node, english_search_term
+from app.tree_ai import choose_node, english_search_term, names_object
 from app.knowledge_layer import formatting_guidance
 from app.knowledge_records import resolve_code, search_items, _MATERIAL_SYNONYMS
 from app.cancellation import check_cancel
@@ -62,6 +62,22 @@ _SECTION_WORDS = {
 }
 
 
+def _content_words(question):
+    """
+    The words that actually name something to price — everything left after
+    dropping generic 'cost' filler, bare measures, and section references.
+    Used both to tell a contentless ask apart and to count how specific the
+    request is (a single content word is a broad keyword, not a pinpointed item).
+    """
+    words = re.findall(r"[A-Za-zÁÉÍÓÚáéíóúñÑ]{2,}", question.lower())
+    return [
+        w for w in words
+        if w not in _CONTENTLESS_WORDS
+        and w not in _MEASURE_WORDS
+        and w not in _SECTION_WORDS
+    ]
+
+
 def _has_concrete_subject(question):
     """
     True when the question names something to price — a material, item, or work
@@ -73,13 +89,7 @@ def _has_concrete_subject(question):
     # A pasted RSMeans code is itself a concrete subject.
     if _extract_code(question):
         return True
-    words = re.findall(r"[A-Za-zÁÉÍÓÚáéíóúñÑ]{2,}", question.lower())
-    return any(
-        w not in _CONTENTLESS_WORDS
-        and w not in _MEASURE_WORDS
-        and w not in _SECTION_WORDS
-        for w in words
-    )
+    return bool(_content_words(question))
 
 
 def _masterformat_orientation(limit=8):
@@ -444,6 +454,38 @@ _MATERIAL_WORDS = set(_MATERIAL_SYNONYMS) | {
 } | _SPANISH_MATERIALS
 
 
+# Product PROPERTIES / descriptors that QUALIFY an item but don't NAME one:
+# finish, use, form. A query made of only these ("stainless steel", "security",
+# "heavy duty") says what a thing is made of or like, not WHAT it is — it could
+# be a sink, a gate, a cabinet... — so it's too broad to route until the item is
+# named. Materials live in _MATERIAL_WORDS; these are the non-material ones.
+# (EN + ES.) Kept tight on purpose: a real item word here would wrongly silence
+# routing, so only add words that are never themselves the thing being priced.
+_PROPERTY_WORDS = {
+    "security", "seguridad", "portable", "portatil", "portátil",
+    "folding", "plegable", "heavy", "duty", "ligero", "pesado",
+    "commercial", "comercial", "residential", "residencial", "industrial",
+    "interior", "exterior", "coated", "painted", "ptd", "pintado",
+    "reinforced", "reforzado", "insulated", "aislado", "flexible",
+    "rigid", "rigido", "rígido",
+}
+
+# Colors are properties too ("stainless steel white" says finish + color, not a
+# thing). Safe to treat as descriptors: a color is never itself the item priced.
+_COLOR_WORDS = {
+    "white", "black", "gray", "grey", "silver", "brown", "beige", "tan",
+    "ivory", "red", "blue", "green", "yellow", "orange", "pink", "purple",
+    "blanco", "blanca", "negro", "negra", "gris", "plateado", "plateada",
+    "marron", "marrón", "cafe", "café", "rojo", "roja", "azul", "verde",
+    "amarillo", "amarilla", "naranja", "rosa", "morado", "morada",
+}
+
+# A query is "too broad to route" when it names ONLY descriptors (material,
+# property, or color) and no actual item — regardless of how many words. See the
+# descriptor-only gate in find_path.
+_DESCRIPTOR_WORDS = _MATERIAL_WORDS | _PROPERTY_WORDS | _COLOR_WORDS
+
+
 # Product decision: the chatbot is Spanish-facing and the search box receives
 # the phrase in the LANGUAGE THE USER TYPED — Spanish stays Spanish, no
 # translation. Flip to True to translate to English instead (RSMeans is an
@@ -621,6 +663,50 @@ def build_item_clarification(question, candidates):
     }
 
 
+def build_broad_clarification(question, term):
+    """
+    needs_clarification response for a SINGLE broad word ("steel", "security").
+
+    One bare word matches too many unrelated lines to navigate to or to browse
+    usefully, so instead of guessing a branch (a confidently wrong price) or
+    flooding the user with the whole catalog, we ask them to ADD a detail — the
+    item it's part of, its type, material, size, or use — and complete the
+    search. The follow-up answer is combined with this word server-side, so
+    "steel" + "gate" routes as "steel gate".
+    """
+    term = (term or "").strip() or str(question).strip()
+    guide = formatting_guidance()
+
+    lines = [
+        f"“{term}” only describes a material or property — it doesn't say WHAT "
+        "the item is. That could be a sink, a pipe, a cabinet, a countertop… "
+        "each with a very different price.",
+        "",
+        "Tell me the object and I'll price it — I'll combine it with "
+        f"“{term}”. For example:",
+        "",
+        f"* {term} sink",
+        f"* {term} pipe",
+        f"* {term} countertop",
+    ]
+
+    return {
+        "status": "needs_clarification",
+        "match_type": "too_broad",
+        "question": question,
+        "message": "\n".join(lines),
+        "candidates": [],
+        "best_match": None,
+        "clarify_questions": [
+            f"What is the “{term}” for — which object? (e.g. a sink, a pipe, a "
+            "cabinet.) Name the item and I'll combine it with what you gave."
+        ],
+        "confidence": "low",
+        "how_to_ask": guide,
+        "path_so_far": [],
+    }
+
+
 def _unknown_code_response(code):
     """Code given but unresolvable and no description to fall back on: ask,
     never guess a branch from a code we don't recognize."""
@@ -743,6 +829,37 @@ def find_path(question, start_path=None, beam_width=3, max_depth=10, cancel=None
             "candidates": [], "clarify_questions": [],
             "fallback_used": False, "ambiguous": True,
         }
+
+    # A query that gives ONLY properties — material, finish, color, size, use
+    # ("steel", "stainless steel white", "brushed nickel", "security") — says what
+    # a thing is made of or like, not WHAT it is: it fits a sink, a pipe, a
+    # cabinet... So we PAUSE and ask the user to name the item (then we combine
+    # "stainless steel white" + "sink"), rather than guessing a branch or flooding
+    # them with the catalog. The moment a real object is named ("steel gate",
+    # "stainless steel sink") it routes normally.
+    #
+    # The MODEL makes this object-vs-property call — it has the world knowledge to
+    # know "brushed nickel" is a finish but "faucet" is a thing, which no word list
+    # can enumerate. The curated _DESCRIPTOR_WORDS set is only the FALLBACK for
+    # when the model is unavailable. Skipped when a branch is locked (multi-turn).
+    _content = _content_words(question)
+    if not (start_path or []) and _content:
+        named = names_object(question)  # True / False / None (model unavailable)
+        only_properties = (
+            named is False if named is not None
+            else all(w in _DESCRIPTOR_WORDS for w in _content)
+        )
+        if only_properties:
+            term = " ".join(_content)
+            src = "IA" if named is not None else "fallback lexico"
+            print(f"\n>>> Solo propiedades ({term!r}), sin nombrar el objeto "
+                  f"[{src}] -> pido aclaracion en vez de navegar/volcar todo <<<")
+            return {
+                "path": [], "hops": [], "confidence": "low",
+                "candidates": [], "clarify_questions": [],
+                "fallback_used": False, "ambiguous": True,
+                "match_type": "too_broad", "term": term,
+            }
 
     # Second fast path: the wording literally matches real catalog items — show
     # the top matches for confirmation instead of deliberating divisions.

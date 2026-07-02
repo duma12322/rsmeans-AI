@@ -26,10 +26,14 @@ export function ClarificationPanel({
         <Spark />
         <div>
           <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-            That could mean a few things
+            {candidates.length > 0
+              ? "That could mean a few things"
+              : "That search is a bit broad"}
           </h3>
           <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-400">
-            Pick the closest match below, or answer a question to narrow it down.
+            {candidates.length > 0
+              ? "Pick the closest match below, or answer a question to narrow it down."
+              : "Add a bit more detail below and I'll find it."}
           </p>
         </div>
       </header>

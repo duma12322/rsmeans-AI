@@ -8,6 +8,7 @@ from app.navigator import (
     needs_clarification,
     build_clarification_response,
     build_item_clarification,
+    build_broad_clarification,
     search_term,
 )
 from app.session import is_session_valid, save_session, SESSION_FILE
@@ -429,6 +430,11 @@ def route_question(question, start_path=None, cancel=None):
     """
     route = find_path(question, start_path=start_path, cancel=cancel)
 
+    # Single broad word ("steel"): ask the user to add a detail instead of
+    # navigating or dumping the whole catalog.
+    if route and route.get("match_type") == "too_broad":
+        return route, build_broad_clarification(question, route.get("term"))
+
     # Text-match candidates: present the real items found, not divisions.
     if route and route.get("match_type") == "item" and route.get("ambiguous"):
         return route, build_item_clarification(question, route["candidates"])
@@ -730,6 +736,12 @@ async def start_browser(question, start_path=None, progress=None, cancel=None):
         _check_cancel(cancel)
         route, clarification = route_question(question, start_path=start_path, cancel=cancel)
         if clarification is not None:
+            # A single broad word ("steel"): don't open a browser at all — ask the
+            # user to add a detail and complete the search (no live search dump).
+            if route and route.get("match_type") == "too_broad":
+                print("[start] termino demasiado amplio -> pido aclaracion "
+                      "(sin abrir navegador)")
+                return clarification
             # Ambiguous keyword query: behave like the RSMeans search box — type
             # the keyword, scrape ALL matches, let the user browse. Only fall back
             # to the follow-up questions if the live search finds nothing.

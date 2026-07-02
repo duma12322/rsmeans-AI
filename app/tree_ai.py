@@ -71,6 +71,72 @@ def english_search_term(question, timeout=20):
 
 
 # =========================
+# OBJECT vs. PROPERTIES CLASSIFIER
+# =========================
+def names_object(question, timeout=15):
+    """
+    Decide whether the text NAMES A PHYSICAL OBJECT to price, or gives ONLY its
+    PROPERTIES (material, finish, color, size, use) with no object named:
+    "stainless steel white" -> no object; "stainless steel sink" -> a sink.
+
+    A curated word list can't know every finish/color/adjective, so we let the
+    model judge — it has the world knowledge to tell an object from its
+    attributes. Returns:
+        True  -> an object/item is named (route it),
+        False -> only properties (ask the user WHICH object),
+        None  -> model unavailable/unparseable, so the caller falls back to its
+                 heuristic. Classification must never break routing.
+    """
+    prompt = (
+        "You screen searches for RSMeans, a construction cost catalog. Decide if "
+        "the text NAMES A PHYSICAL OBJECT/ITEM that can be priced (sink, pipe, "
+        "door, cabinet, gate, water heater, wall, countertop...), or gives ONLY "
+        "its PROPERTIES with NO object named — material, finish, color, size, or "
+        "use (steel, stainless, white, 6 inch, portable, security).\n"
+        "The text may be Spanish (lavaplatos = sink, tubo = pipe, puerta = door).\n"
+        "Reply with ONLY JSON, no prose: "
+        '{"names_object": true|false, "object": "<the object noun, or null>"}.\n'
+        "Examples:\n"
+        '- "stainless steel" -> {"names_object": false, "object": null}\n'
+        '- "stainless steel white" -> {"names_object": false, "object": null}\n'
+        '- "security" -> {"names_object": false, "object": null}\n'
+        '- "brushed nickel" -> {"names_object": false, "object": null}\n'
+        '- "stainless steel sink" -> {"names_object": true, "object": "sink"}\n'
+        '- "lavaplatos de acero" -> {"names_object": true, "object": "lavaplatos"}\n'
+        '- "steel folding gate" -> {"names_object": true, "object": "gate"}\n'
+        '- "paint interior walls" -> {"names_object": true, "object": "walls"}\n\n'
+        f"Text: {question}\nJSON:"
+    )
+    try:
+        res = requests.post(
+            MARCE_API_URL,
+            headers={
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": "Return only the JSON object."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0,
+            },
+            timeout=timeout,
+        )
+        res.raise_for_status()
+        text = res.json()["choices"][0]["message"]["content"]
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if not m:
+            return None
+        val = json.loads(m.group(0)).get("names_object")
+        return val if isinstance(val, bool) else None
+    except Exception as e:  # noqa: BLE001 - classification is best-effort
+        print(f"[tree_ai] names_object failed: {e}")
+        return None
+
+
+# =========================
 # OPTIONS FORMATTING
 # =========================
 def build_options_text(options):

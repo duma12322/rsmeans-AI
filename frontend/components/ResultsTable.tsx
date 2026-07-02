@@ -11,6 +11,11 @@ type SortDir = "asc" | "desc";
 
 const num = (v: number | null | undefined) => v ?? 0;
 
+// How many rows we show before collapsing the rest behind a "show all" toggle.
+// A keyword search can return hundreds of lines; 50 keeps the first screen
+// scannable while the button reveals everything on demand.
+const COLLAPSED_LIMIT = 50;
+
 // The full grid of line-items under the chosen section. Filterable by text and
 // sortable by any column. Click any value cell (code, unit, totals) to copy it;
 // each row also has a copy button for the whole line.
@@ -24,6 +29,7 @@ export function ResultsTable({
   const [copied, setCopied] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
+  const [expanded, setExpanded] = useState(false);
 
   const hl = (highlightLine || "").replace(/\D/g, "");
 
@@ -65,6 +71,13 @@ export function ResultsTable({
     }
     return out;
   }, [rows, filter, sort]);
+
+  // Collapse the tail: show the first COLLAPSED_LIMIT rows until the user opts to
+  // see everything. The cap runs AFTER filter/sort, so "show all" reveals the
+  // rest of the *current* view, not the raw list.
+  const collapsible = view.length > COLLAPSED_LIMIT;
+  const shown = expanded || !collapsible ? view : view.slice(0, COLLAPSED_LIMIT);
+  const hiddenCount = view.length - shown.length;
 
   if (!rows?.length) {
     return (
@@ -190,7 +203,7 @@ export function ResultsTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-            {view.map((r) => {
+            {shown.map((r) => {
               const isHl = hl && r.line_number.replace(/\D/g, "") === hl;
               const k = r.line_number;
               const hasBare = num(r.bare_total) !== 0;
@@ -283,10 +296,51 @@ export function ResultsTable({
                 </td>
               </tr>
             )}
+            {collapsible && (
+              <tr>
+                <td colSpan={6} className="px-4 py-3 text-center">
+                  <button
+                    type="button"
+                    onClick={() => setExpanded((e) => !e)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-indigo-400 hover:text-indigo-700 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-indigo-500 dark:hover:text-indigo-300"
+                  >
+                    {expanded ? (
+                      <>Show fewer<Chevron up /></>
+                    ) : (
+                      <>Show all {view.length}<Chevron /></>
+                    )}
+                  </button>
+                  {!expanded && (
+                    <span className="ml-2 text-xs text-slate-400 dark:text-slate-500">
+                      {hiddenCount} more hidden
+                    </span>
+                  )}
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
     </div>
+  );
+}
+
+function Chevron({ up = false }: { up?: boolean }) {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={up ? "rotate-180" : ""}
+    >
+      <path d="M6 9l6 6 6-6" />
+    </svg>
   );
 }
 
