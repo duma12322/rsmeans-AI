@@ -181,26 +181,31 @@ def formatting_guidance() -> dict:
     """
     return {
         "how_to_ask": (
-            "Describe a single line item as an action plus the material or "
-            "item, e.g. 'Cost to [install/replace/repair/paint/pour] a "
-            "[material or item] [size/type/location]'."
+            "Search one item at a time: name the ITEM first, then its "
+            "characteristics to narrow it — e.g. 'scissors, steel, security'. "
+            "The item leads; the traits (material, type, size) refine it."
         ),
         "rules": [
-            "Always name the specific material or item (this matters most).",
-            "Ask about one line item per question — not several at once.",
-            "Add a qualifier when it helps: size, type, interior/exterior, residential/commercial.",
+            "Name the item FIRST, then its characteristics to narrow it — e.g. "
+            "'scissors, steel, security'. The item leads; the traits refine it.",
+            "Search ONE item at a time. Combining two different items ('scissors "
+            "gate') matches nothing — search each separately.",
+            "Add characteristics that pin it down: material, type, size, use "
+            "(steel, folding, portable, 6 inch).",
             "Everyday words are fine — you do not need RSMeans codes.",
             "If you DO know the RSMeans line number, ask for it directly — any "
             "separator works, e.g. 'What is the cost of code 26 56 13. 10 2870?'.",
         ],
         "good_examples": [
+            "scissors, steel, security",
+            "gate, steel, folding",
             "Cost to paint interior walls",
             "What is the cost of code 26 56 13. 10 2870?",
         ],
         "avoid_examples": [
+            "scissors gate  (two different items at once)",
             "Tell me the cost  (no item named)",
             "How much will it cost?  (nothing to look up)",
-            "Paint walls and install outlets  (two trades at once)",
         ],
     }
 

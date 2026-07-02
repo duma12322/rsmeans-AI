@@ -132,6 +132,24 @@ _SECTION_REF = re.compile(
 )
 
 
+# Material synonyms: users name a material by its GENERIC family ("metal"),
+# but RSMeans descriptions name the SPECIFIC material ("steel", "aluminum").
+# Without this, "metal scissors" can't match "scissors ... ptd. steel" and the
+# item is never surfaced — even though the RSMeans site's own search finds it.
+# Each key expands to the words that should count as the same material.
+_MATERIAL_SYNONYMS = {
+    "metal": {"steel", "stainless", "aluminum", "aluminium", "iron", "wrought",
+              "galvanized", "galv", "brass", "bronze", "copper", "alloy", "metallic"},
+    "steel": {"metal", "stainless", "galvanized", "galv", "iron"},
+    "aluminum": {"aluminium", "metal"},
+    "aluminium": {"aluminum", "metal"},
+    "plastic": {"pvc", "vinyl", "polyethylene", "polypropylene", "poly", "hdpe",
+                "abs", "nylon", "acrylic", "fiberglass", "frp"},
+    "wood": {"wooden", "timber", "lumber", "plywood", "hardwood", "softwood"},
+    "wooden": {"wood", "timber", "lumber"},
+}
+
+
 def _stem(word):
     """Very light normalization so 'excavations' matches 'excavation': drop a
     trailing plural 's' (and 'es') on words long enough for it to be safe."""
@@ -182,6 +200,10 @@ def _token_hits(tokens, words):
     hits = 0
     for t in tokens:
         if t in words or _stem(t) in word_stems:
+            hits += 1
+        # A generic material name ("metal") counts when the description uses a
+        # specific one ("steel", "aluminum"), and vice-versa.
+        elif _MATERIAL_SYNONYMS.get(t, ()) and any(s in words for s in _MATERIAL_SYNONYMS[t]):
             hits += 1
         # Substring fallback only between LONG words, so a short description
         # token (e.g. "c" from "C.Y.") can't match inside a query word.

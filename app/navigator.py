@@ -2,9 +2,9 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 
 from app.tree_loader import load_tree
-from app.tree_ai import choose_node
+from app.tree_ai import choose_node, english_search_term
 from app.knowledge_layer import formatting_guidance
-from app.knowledge_records import resolve_code, search_items
+from app.knowledge_records import resolve_code, search_items, _MATERIAL_SYNONYMS
 from app.cancellation import check_cancel
 
 TREE = load_tree()
@@ -417,6 +417,78 @@ def _residual_text(question, code):
     return " ".join(words)
 
 
+# Words that describe the ASK, not the item — dropped before we decide what to
+# type into the RSMeans search box.
+_SEARCH_FILLER = {
+    "find", "get", "need", "want", "looking", "search", "client", "clients",
+    "customer", "asked", "please", "cost", "price", "for", "the", "some", "one",
+    "made", "with", "without", "that", "were", "was", "are", "and",
+    # Spanish
+    "encontrar", "buscar", "cliente", "clientes", "pidio", "necesito", "quiero",
+    "era", "eran", "hecho", "hechas", "costo", "precio", "para", "con", "sin",
+    "una", "uno", "unos", "unas", "los", "las", "del", "por", "que", "como",
+    "este", "esta", "esos", "esas", "ese", "esa", "mas", "muy", "dame", "busca",
+}
+
+# Every material word we know (generic + specific), so "metal folding gate"
+# searches "folding gate" and the user picks the material from the results.
+# Spanish material words are included because the chatbot is Spanish-facing and
+# searches in the language typed — "tijeras de metal" -> "tijeras".
+_SPANISH_MATERIALS = {
+    "metal", "metalico", "metalica", "metálico", "metálica", "acero", "madera",
+    "plastico", "plástico", "aluminio", "hierro", "bronce", "laton", "latón",
+    "cobre", "inoxidable", "galvanizado", "fibra",
+}
+_MATERIAL_WORDS = set(_MATERIAL_SYNONYMS) | {
+    v for syns in _MATERIAL_SYNONYMS.values() for v in syns
+} | _SPANISH_MATERIALS
+
+
+# Product decision: the chatbot is Spanish-facing and the search box receives
+# the phrase in the LANGUAGE THE USER TYPED — Spanish stays Spanish, no
+# translation. Flip to True to translate to English instead (RSMeans is an
+# English catalog, so English generally returns more matches).
+TRANSLATE_SEARCH_TO_ENGLISH = True
+
+
+def _search_term_heuristic(question):
+    """
+    Build the search phrase in the SAME language the user typed: keep the
+    descriptor + subject ("tijeras de seguridad de metal" -> "tijeras
+    seguridad"), dropping a code, generic filler, material words, and anything
+    after a negation cue ("... no de plastico ni madera"). Words under 3 letters
+    (Spanish "de", "la") fall out naturally via the token pattern.
+    """
+    text = re.sub(r"\d[\d.\s\-]{4,}\d", " ", str(question).lower())
+    text = re.split(r"\b(?:not|no|sin|ni)\b", text)[0]
+    words = [
+        w for w in re.findall(r"[a-záéíóúñü]{3,}", text)
+        if w not in _SEARCH_FILLER and w not in _MATERIAL_WORDS
+    ]
+    if words:
+        return " ".join(words)
+    # Only filler/material was given -> keep the non-filler words so a bare
+    # "acero" still searches something.
+    return " ".join(w for w in re.findall(r"[a-záéíóúñü]{3,}", text)
+                    if w not in _SEARCH_FILLER)
+
+
+def search_term(question):
+    """
+    Decide what the AI types into the RSMeans search box.
+
+    By default it searches in the language the user typed (see
+    TRANSLATE_SEARCH_TO_ENGLISH). When translation is enabled, a model call turns
+    "tijeras de seguridad de metal" into "safety scissors"; on failure it falls
+    back to the same-language heuristic so a search always runs.
+    """
+    if TRANSLATE_SEARCH_TO_ENGLISH:
+        term = english_search_term(question)
+        if term:
+            return term
+    return _search_term_heuristic(question)
+
+
 def _route_from_leaf(hit):
     """Build a find_path-shaped route dict from a code-resolution hit."""
     path = hit["path"]
@@ -478,12 +550,14 @@ def _item_candidates(question, start_path):
 
     candidates = [
         {
-            "code": m["line"],          # the line number doubles as the pick id
-            "name": m["description"],    # what the user sees
+            "code": m["line"],           # the line number doubles as the pick id
+            "name": m["description"],     # message text uses this
+            "description": m["description"],  # what the FRONTEND panel renders
             "line": m["line"],
             "path": m["path"],
+            "section": " > ".join(m["path"]),  # human-readable location
+            "leaf_name": m["name"],       # the catalog section the item sits in
             "division": m["division"],
-            "leaf_name": m["name"],
             "score": m["score"],
         }
         for m in strong

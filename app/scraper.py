@@ -8,6 +8,7 @@ from app.navigator import (
     needs_clarification,
     build_clarification_response,
     build_item_clarification,
+    search_term,
 )
 from app.session import is_session_valid, save_session, SESSION_FILE
 from app.config import RS_EMAIL, RS_PASSWORD
@@ -613,6 +614,113 @@ async def scrape_route(question, route, progress=None, cancel=None):
 
 
 # =========================
+# KEYWORD SEARCH (BROWSER) — mirrors the RSMeans search box
+# =========================
+async def scrape_search(question, term, progress=None, cancel=None):
+    """
+    Type `term` into the RSMeans search box and scrape the whole results grid —
+    the app doing exactly what a user would do in the site's search field. Used
+    for keyword queries ("scissor") where there's no single right leaf: instead
+    of asking "which do you mean?", we return every matching line so the user
+    browses and picks, like a real search.
+
+    Reuses the same login, grid scraping and currency formatting as the
+    navigate-and-scrape path; only the "how we reach the grid" differs (search
+    box vs walking the tree).
+    """
+    init_db()
+    emit = progress or (lambda *a, **k: None)
+
+    def _error(message, exc=None):
+        if exc is not None:
+            print(f"[search] ERROR: {exc}")
+        log_error(question, [], message, exc)
+        return {"status": "error", "message": message,
+                "error": str(exc) if exc is not None else None}
+
+    browser = None
+    try:
+        async with async_playwright() as p:
+            _check_cancel(cancel)
+            emit("opening")
+            browser = await p.chromium.launch(headless=False)
+            context = await browser.new_context(
+                storage_state=SESSION_FILE if is_session_valid() else None
+            )
+            page = await context.new_page()
+            await page.goto("https://www.rsmeansonline.com/")
+
+            if not is_session_valid():
+                _check_cancel(cancel)
+                emit("login")
+                try:
+                    await perform_login(page, context, RS_EMAIL, RS_PASSWORD)
+                except LoginError as e:
+                    return _error(str(e), exc=e)
+
+            _check_cancel(cancel)
+            await page.click("a#\\/SearchData")
+            await wait_tree_ready(page)
+
+            # ===== TYPE THE KEYWORD AND RUN THE SITE SEARCH =====
+            _check_cancel(cancel)
+            emit("navigating")  # escribiendo el termino en el buscador de RSMeans
+            print(f"\n>>> BUSQUEDA EN VIVO: escribiendo {term!r} en el buscador")
+            await page.fill("#searchTextBox", term)
+            # "all" = every word must appear (the site's own default). "any" was
+            # too loose: a common word like "security" alone matched unrelated
+            # cost-factor lines and buried the real items.
+            try:
+                await page.select_option("#drpSearch", "all")
+            except Exception:
+                pass  # keep the site's default preference if the select changed
+            await page.click("#search-btn1")
+
+            _check_cancel(cancel)
+            emit("scraping")
+            rows = await scrape_grid(page)
+
+            if rows:
+                save_to_db(
+                    rows=rows, question=question, c3=None, c4=None,
+                    final_code=None, final_name=f"search: {term}", path=None,
+                )
+
+            print(f">>> BUSQUEDA {term!r} -> {len(rows)} resultado(s)")
+            return {
+                "status": "ok",
+                "mode": "search",
+                "search_term": term,
+                "rows": [_with_display(r) for r in rows],
+                "matched_line": None,
+                "breadcrumb": [],
+                "path": [],
+                "final_code": None,
+                "final_name": f"Search results for “{term}”",
+                "confidence": "high",
+                "fallback_used": False,
+                "clarify_questions": [],
+            }
+
+    except ScrapeCancelled:
+        print("[search] cancelado por el cliente (peticion pausada)")
+        return {"status": "cancelled",
+                "message": "Consulta pausada: el cliente detuvo la peticion."}
+    except Exception as e:  # noqa: BLE001
+        return _error(
+            "There was a problem running the RSMeans search (login, grid "
+            "loading, or a timeout). Please try again in a moment.",
+            exc=e,
+        )
+    finally:
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception as e:
+                print(f"[search] error al cerrar el navegador (ignorado): {e}")
+
+
+# =========================
 # SINGLE-SHOT ENTRY (route offline first, browser only if confident)
 # =========================
 async def start_browser(question, start_path=None, progress=None, cancel=None):
@@ -622,6 +730,19 @@ async def start_browser(question, start_path=None, progress=None, cancel=None):
         _check_cancel(cancel)
         route, clarification = route_question(question, start_path=start_path, cancel=cancel)
         if clarification is not None:
+            # Ambiguous keyword query: behave like the RSMeans search box — type
+            # the keyword, scrape ALL matches, let the user browse. Only fall back
+            # to the follow-up questions if the live search finds nothing.
+            term = search_term(question)
+            if term:
+                print(f"[start] consulta ambigua -> BUSQUEDA en vivo con {term!r}")
+                results = await scrape_search(
+                    question, term, progress=progress, cancel=cancel
+                )
+                if results.get("status") == "ok" and results.get("rows"):
+                    return results
+                if results.get("status") == "cancelled":
+                    return results
             return clarification
         return await scrape_route(question, route, progress=progress, cancel=cancel)
     except ScrapeCancelled:

@@ -46,7 +46,7 @@ export function AskForm({
           placeholder={
             clarifying
               ? "Type your answer…"
-              : "e.g. Cost to paint interior walls — or — What is the cost of code 26 56 13. 10 2870?"
+              : "Item first, then details — e.g. scissors, steel, security — or a code: 26 56 13. 10 2870"
           }
           className="w-full rounded-xl border border-slate-300 bg-white py-3 pl-10 pr-4 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:ring-indigo-500/20"
         />

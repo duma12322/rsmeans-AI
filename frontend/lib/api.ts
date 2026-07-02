@@ -22,6 +22,10 @@ export interface DivisionCandidate {
 export interface ItemCandidate {
   line: string;
   description: string;
+  // The catalog section the item sits in, so the user knows what the code means
+  // (e.g. "Material Handling") instead of guessing from a bare line number.
+  leaf_name?: string;
+  section?: string;
   unit?: string;
   bare_total?: number | null;
   total_op?: number | null;

@@ -1,10 +1,73 @@
 import json
+import re
 
 import requests
 
 from app.config import DEEPSEEK_API_KEY, MARCE_API_URL
 from app.knowledge_layer import build_root_context, get_division_context
 from app.knowledge_records import options_preview
+
+
+# =========================
+# SEARCH-TERM TRANSLATION / EXTRACTION
+# =========================
+# Forced Spanish->English term choices. The model otherwise picks common product
+# names (seguridad -> "safety scissors"); this pins the wording the user wants.
+_SEARCH_GLOSSARY = {
+    "seguridad": "security",
+}
+
+
+def english_search_term(question, timeout=20):
+    """
+    Turn a user request (in ANY language) into the concise ENGLISH phrase to type
+    into the RSMeans search box. The catalog is English-only, so a Spanish query
+    like "tijeras de seguridad de metal" must become "metal security scissors".
+
+    Returns the phrase (lowercased words), or "" on any failure so the caller can
+    fall back to the offline heuristic — this must never break a search.
+    """
+    glossary = "; ".join(f"{es} -> {en}" for es, en in _SEARCH_GLOSSARY.items())
+    prompt = (
+        "You prepare search terms for RSMeans, an ENGLISH construction cost "
+        "catalog. Translate the user's request to English if needed and return "
+        "ONLY the concise search phrase to type into the search box: the item "
+        "plus its material/descriptor words, in natural order.\n"
+        "Rules:\n"
+        "- English only. No translation notes, no quotes, no punctuation.\n"
+        "- Keep material and descriptor words (metal, security, folding, portable).\n"
+        "- Drop filler (cost, price, find, the) and any 'not X' exclusions.\n"
+        "- 2-4 words, singular or plural as natural.\n"
+        f"- ALWAYS translate these exact terms this way: {glossary}.\n\n"
+        f"User request: {question}\n"
+        "Search phrase:"
+    )
+    try:
+        res = requests.post(
+            MARCE_API_URL,
+            headers={
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": "Return only the English search phrase."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0,
+            },
+            timeout=timeout,
+        )
+        res.raise_for_status()
+        text = res.json()["choices"][0]["message"]["content"].strip()
+        # Keep it to a clean lowercased word phrase.
+        text = text.strip().strip('"').strip("'").splitlines()[0]
+        words = re.findall(r"[a-z]+", text.lower())
+        return " ".join(words)
+    except Exception as e:  # noqa: BLE001 - translation is best-effort
+        print(f"[tree_ai] english_search_term failed: {e}")
+        return ""
 
 
 # =========================

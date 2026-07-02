@@ -14,6 +14,7 @@ interface Turn {
 }
 
 const STARTERS = [
+  "scissors, steel, security",
   "Cost to paint interior walls",
   "What is the cost of code 26 56 13. 10 2870?",
   "Replace a residential water heater",
@@ -168,7 +169,8 @@ export default function Home() {
               What would you like to price?
             </h2>
             <p className="mx-auto mt-1 max-w-md text-sm text-slate-500 dark:text-slate-400">
-              Describe a single item as an action plus material, or paste an
+              Search one item at a time — name the item first, then its
+              characteristics (e.g. scissors, steel, security). Or paste an
               RSMeans line number in any format.
             </p>
             <div className="mt-5 flex flex-wrap justify-center gap-2">
