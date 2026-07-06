@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import type { Row } from "@/lib/api";
 import { currency, prettyLine, rowToTsv } from "@/lib/format";
 import { copyText } from "@/lib/clipboard";
@@ -12,10 +12,33 @@ type SortDir = "asc" | "desc";
 const num = (v: number | null | undefined) => v ?? 0;
 
 // How many rows we show before the "show more" button appears, and how many
-// each click reveals after that. A keyword search can return up to 500 lines;
+// each click reveals after that. A keyword search can return up to 200 lines;
 // 50 keeps the first screen scannable, then the user pulls them in 100-row steps.
 const COLLAPSED_LIMIT = 50;
 const STEP = 100;
+
+// Wrap every occurrence of a filter word in a highlight <mark>, so the keywords
+// the user typed light up in each description. Splitting on ONE capturing group
+// lands the matched pieces at odd indices — no regex lastIndex juggling.
+function highlight(text: string, terms: string[]): ReactNode {
+  const escaped = terms
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .filter(Boolean);
+  if (escaped.length === 0) return text;
+  const re = new RegExp(`(${escaped.join("|")})`, "gi");
+  return text.split(re).map((part, i) =>
+    i % 2 === 1 ? (
+      <mark
+        key={i}
+        className="rounded-[2px] bg-amber-200 px-0.5 text-slate-900 dark:bg-amber-400/30 dark:text-amber-50"
+      >
+        {part}
+      </mark>
+    ) : (
+      part
+    )
+  );
+}
 
 // The full grid of line-items under the chosen section. Filterable by text and
 // sortable by any column. Click any value cell (code, unit, totals) to copy it;
@@ -29,23 +52,40 @@ export function ResultsTable({
 }) {
   const [copied, setCopied] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  // Two filter modalities: "words" matches each typed word anywhere (AND);
+  // "phrase" is the old behavior — the whole string as one contiguous substring.
+  const [mode, setMode] = useState<"words" | "phrase">("words");
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
   // How many rows are currently revealed; grows by STEP per "show more" click.
   const [visibleCount, setVisibleCount] = useState(COLLAPSED_LIMIT);
 
   const hl = (highlightLine || "").replace(/\D/g, "");
 
+  const q = filter.trim().toLowerCase();
+  // The filter words (for "words" mode). Same tokenization drives both the
+  // filtering and the highlighting, so what filtered is what lights up.
+  const terms = useMemo(() => q.split(/\s+/).filter(Boolean), [q]);
+  // What to highlight: each word in "words" mode, the whole phrase in "phrase".
+  const marks = mode === "phrase" ? (q ? [q] : []) : terms;
+
   const view = useMemo(() => {
-    const q = filter.trim().toLowerCase();
     let out = rows ?? [];
     if (q) {
       const qDigits = q.replace(/\D/g, "");
-      out = out.filter(
-        (r) =>
-          r.description.toLowerCase().includes(q) ||
-          (qDigits &&
-            r.line_number.replace(/\D/g, "").includes(qDigits))
-      );
+      out = out.filter((r) => {
+        const desc = r.description.toLowerCase();
+        const lineDigits = r.line_number.replace(/\D/g, "");
+        // "phrase": the exact string must appear contiguously (or its digits in
+        // the line number). "words": every word must appear somewhere (AND), so
+        // "cost addi" keeps "Cost adjustment… additional…".
+        if (mode === "phrase") {
+          return desc.includes(q) || (!!qDigits && lineDigits.includes(qDigits));
+        }
+        return terms.every((t) => {
+          const tDigits = t.replace(/\D/g, "");
+          return desc.includes(t) || (!!tDigits && lineDigits.includes(tDigits));
+        });
+      });
     }
     if (sort) {
       const dir = sort.dir === "asc" ? 1 : -1;
@@ -72,7 +112,7 @@ export function ResultsTable({
       });
     }
     return out;
-  }, [rows, filter, sort]);
+  }, [rows, q, terms, mode, sort]);
 
   // Reveal the first `visibleCount` rows and pull the rest in STEP-sized steps.
   // The cap runs AFTER filter/sort, so "show more" reveals the rest of the
@@ -179,16 +219,46 @@ export function ResultsTable({
             : `${view.length} of ${rows.length}`}
           <span className="ml-2 hidden sm:inline">· click a value to copy</span>
         </span>
-        <div className="relative">
-          <input
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter…"
-            className="w-44 rounded-lg border border-slate-300 bg-white py-1 pl-7 pr-2 text-xs text-slate-700 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:focus:ring-indigo-500/20"
-          />
-          <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-slate-400">
-            <FilterIcon />
-          </span>
+        <div className="flex items-center gap-2">
+          {/* Toggle the two filter modalities. "Words" is the new per-word match
+              (default); "Phrase" is the old contiguous-substring match. */}
+          <div
+            role="group"
+            aria-label="Filter mode"
+            className="flex rounded-lg border border-slate-300 p-0.5 text-[11px] dark:border-slate-600"
+          >
+            {(["words", "phrase"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setMode(m)}
+                aria-pressed={mode === m}
+                title={
+                  m === "words"
+                    ? "Match each word anywhere (e.g. “cost addi” → “Cost adjustment… additional…”)"
+                    : "Match the exact phrase as typed, contiguously"
+                }
+                className={`rounded-md px-2 py-0.5 font-medium transition ${
+                  mode === m
+                    ? "bg-indigo-600 text-white shadow-sm"
+                    : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                }`}
+              >
+                {m === "words" ? "Words" : "Phrase"}
+              </button>
+            ))}
+          </div>
+          <div className="relative">
+            <input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter…"
+              className="w-44 rounded-lg border border-slate-300 bg-white py-1 pl-7 pr-2 text-xs text-slate-700 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:focus:ring-indigo-500/20"
+            />
+            <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-slate-400">
+              <FilterIcon />
+            </span>
+          </div>
         </div>
       </div>
 
@@ -233,7 +303,7 @@ export function ResultsTable({
                     copyValue={r.description}
                     className="text-slate-800 dark:text-slate-200"
                   >
-                    {r.description}
+                    {highlight(r.description, marks)}
                   </Cell>
                   {r.unit ? (
                     <Cell

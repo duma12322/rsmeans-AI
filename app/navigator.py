@@ -490,29 +490,25 @@ _DESCRIPTOR_WORDS = _MATERIAL_WORDS | _PROPERTY_WORDS | _COLOR_WORDS
 # the phrase in the LANGUAGE THE USER TYPED — Spanish stays Spanish, no
 # translation. Flip to True to translate to English instead (RSMeans is an
 # English catalog, so English generally returns more matches).
-TRANSLATE_SEARCH_TO_ENGLISH = True
+TRANSLATE_SEARCH_TO_ENGLISH = False
 
 
 def _search_term_heuristic(question):
     """
-    Build the search phrase in the SAME language the user typed: keep the
-    descriptor + subject ("tijeras de seguridad de metal" -> "tijeras
-    seguridad"), dropping a code, generic filler, material words, and anything
-    after a negation cue ("... no de plastico ni madera"). Words under 3 letters
-    (Spanish "de", "la") fall out naturally via the token pattern.
+    Build the search phrase from the words the user actually typed, in that same
+    language: drop only a code, generic filler ("cost", "for", "necesito"…), and
+    anything after a negation cue ("... no de plastico ni madera"). Material and
+    descriptor words are KEPT — a keyword search must honour "steel scissors" as
+    steel scissors, not silently narrow it to "scissors" (the site then combines
+    the words per the search box's any/all mode). Words under 3 letters (Spanish
+    "de", "la") fall out naturally via the token pattern.
     """
     text = re.sub(r"\d[\d.\s\-]{4,}\d", " ", str(question).lower())
     text = re.split(r"\b(?:not|no|sin|ni)\b", text)[0]
-    words = [
+    return " ".join(
         w for w in re.findall(r"[a-záéíóúñü]{3,}", text)
-        if w not in _SEARCH_FILLER and w not in _MATERIAL_WORDS
-    ]
-    if words:
-        return " ".join(words)
-    # Only filler/material was given -> keep the non-filler words so a bare
-    # "acero" still searches something.
-    return " ".join(w for w in re.findall(r"[a-záéíóúñü]{3,}", text)
-                    if w not in _SEARCH_FILLER)
+        if w not in _SEARCH_FILLER
+    )
 
 
 def search_term(question):

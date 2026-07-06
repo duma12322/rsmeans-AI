@@ -260,7 +260,7 @@ async def scrape_grid(page):
 # hits we pull more than the default first page (up to SEARCH_MAX_ROWS); above the
 # max we stop and tell the user to narrow the search instead of dumping thousands.
 SEARCH_BUMP_THRESHOLD = 50
-SEARCH_MAX_ROWS = 500
+SEARCH_MAX_ROWS = 200
 
 
 async def _read_total_records(page):
@@ -736,11 +736,13 @@ async def scrape_search(question, term, progress=None, cancel=None):
             emit("navigating")  # escribiendo el termino en el buscador de RSMeans
             print(f"\n>>> BUSQUEDA EN VIVO: escribiendo {term!r} en el buscador")
             await page.fill("#searchTextBox", term)
-            # "all" = every word must appear (the site's own default). "any" was
-            # too loose: a common word like "security" alone matched unrelated
-            # cost-factor lines and buried the real items.
+            # "any" = a line matches if it contains AT LEAST ONE of the words, so a
+            # keyword query returns everything related instead of only the lines
+            # that carry the exact word combination (which forced the user to type
+            # the record's specific name). Broader by design; the SEARCH_MAX_ROWS
+            # cap + the "add more detail" notice keep a noisy result set in check.
             try:
-                await page.select_option("#drpSearch", "all")
+                await page.select_option("#drpSearch", "any")
             except Exception:
                 pass  # keep the site's default preference if the select changed
             await page.click("#search-btn1")
