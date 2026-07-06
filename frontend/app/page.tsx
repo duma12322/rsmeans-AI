@@ -20,6 +20,10 @@ const STARTERS = [
   "Replace a residential water heater",
 ];
 
+// sessionStorage key for the persisted conversation (feed + open session_id), so
+// a browser refresh continues the conversation instead of losing it.
+const STORAGE_KEY = "rsmeans_conversation";
+
 export default function Home() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
@@ -29,6 +33,56 @@ export default function Home() {
   const feedEnd = useRef<HTMLDivElement>(null);
   // Aborts the in-flight /ask/stream request when the user hits Stop.
   const abortRef = useRef<AbortController | null>(null);
+
+  // Rehydrate the conversation on mount so a page reload doesn't drop an open
+  // clarification: the backend still holds the session (conversations.json), but
+  // the session_id lived only in React state, so a refresh forgot it. We mirror
+  // both the feed and the session_id into sessionStorage (per-tab; cleared when
+  // the tab closes) and read them back here. A turn that was still loading when
+  // the page reloaded has no in-flight request anymore — surface it as
+  // interrupted instead of a spinner that never resolves.
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as {
+        turns?: Turn[];
+        sessionId?: string | null;
+      };
+      const restored = (saved.turns ?? []).map((t) =>
+        t.response
+          ? t
+          : {
+              ...t,
+              phase: undefined,
+              response: {
+                status: "cancelled",
+                message:
+                  "This query was interrupted by a page reload — retry to run it again.",
+              } as AskResponse,
+            }
+      );
+      setTurns(restored);
+      setSessionId(saved.sessionId ?? null);
+    } catch {
+      /* corrupt or unavailable storage: start fresh, not fatal */
+    }
+  }, []);
+
+  // Persist the feed + open session on every change (removing the key once the
+  // conversation is cleared).
+  useEffect(() => {
+    try {
+      if (turns.length === 0) sessionStorage.removeItem(STORAGE_KEY);
+      else
+        sessionStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ turns, sessionId })
+        );
+    } catch {
+      /* quota exceeded / storage disabled: degrade to in-memory only */
+    }
+  }, [turns, sessionId]);
 
   function scrollToEnd() {
     requestAnimationFrame(() =>
@@ -243,6 +297,17 @@ const PHASE_LABELS: Record<Phase, string> = {
   scraping: "Scanning live prices…",
 };
 
+// The backend emits these in order. The stepper fills up to (and including) the
+// current one, so the user sees forward motion even while the clock keeps ticking
+// — a bare rising counter reads as "stuck" once a healthy scrape passes ~15s.
+const PHASE_ORDER: Phase[] = [
+  "analyzing",
+  "opening",
+  "login",
+  "navigating",
+  "scraping",
+];
+
 function LoadingCard({ phase }: { phase?: Phase }) {
   const [elapsed, setElapsed] = useState(0);
 
@@ -251,25 +316,55 @@ function LoadingCard({ phase }: { phase?: Phase }) {
     return () => clearInterval(t);
   }, []);
 
-  const label = PHASE_LABELS[phase ?? "analyzing"];
+  const current = phase ?? "analyzing";
+  const idx = PHASE_ORDER.indexOf(current);
+  const label = PHASE_LABELS[current];
 
   return (
-    <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+    // role=status + aria-live announces each phase change to screen readers; the
+    // per-second counter is aria-hidden so it isn't read aloud every tick.
+    <div
+      role="status"
+      aria-live="polite"
+      className="space-y-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900"
+    >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-200 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400" />
+          <span
+            className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-200 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400"
+            aria-hidden="true"
+          />
           <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
             {label}
           </span>
         </div>
-        <span className="text-xs tabular-nums text-slate-400 dark:text-slate-500">
+        <span
+          className="text-xs tabular-nums text-slate-400 dark:text-slate-500"
+          aria-hidden="true"
+        >
           {elapsed}s
         </span>
       </div>
-      <div className="animate-pulse space-y-3">
-        <div className="h-16 rounded-lg bg-slate-100 dark:bg-slate-800" />
-        <div className="h-3 w-2/3 rounded bg-slate-200 dark:bg-slate-700" />
+
+      {/* 5-phase progress: completed + current filled, the rest muted. */}
+      <div className="flex gap-1.5" aria-hidden="true">
+        {PHASE_ORDER.map((p, i) => (
+          <span
+            key={p}
+            className={`h-1.5 flex-1 rounded-full transition-colors ${
+              i < idx
+                ? "bg-indigo-600 dark:bg-indigo-500"
+                : i === idx
+                  ? "animate-pulse bg-indigo-600 dark:bg-indigo-400"
+                  : "bg-slate-200 dark:bg-slate-700"
+            }`}
+          />
+        ))}
       </div>
+
+      <p className="text-[11px] text-slate-400 dark:text-slate-500">
+        Step {idx + 1} of {PHASE_ORDER.length} · this usually takes 15–30s
+      </p>
     </div>
   );
 }

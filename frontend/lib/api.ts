@@ -159,6 +159,11 @@ export async function askStream(
   const decoder = new TextDecoder();
   let buffer = "";
   let final: AskResponse | null = null;
+  // Track whether the scrape actually started. If the stream dies AFTER we saw
+  // progress but BEFORE the result frame, that's a mid-flight connection drop
+  // (flaky wifi, the machine slept, a proxy timed out) — not a backend that
+  // never answered. The two deserve different messages.
+  let sawProgress = false;
 
   // SSE frames are separated by a blank line; each frame has one `data:` line.
   while (true) {
@@ -181,14 +186,21 @@ export async function askStream(
       } catch {
         continue;
       }
-      if (evt.type === "progress" && evt.phase) onProgress(evt.phase);
-      else if (evt.type === "result" && evt.data) final = evt.data;
+      if (evt.type === "progress" && evt.phase) {
+        sawProgress = true;
+        onProgress(evt.phase);
+      } else if (evt.type === "result" && evt.data) final = evt.data;
     }
   }
 
-  return (
-    final ?? { status: "error", message: "No response from the server." }
-  );
+  if (final) return final;
+
+  return {
+    status: "error",
+    message: sawProgress
+      ? "The connection dropped before the result came back. The lookup may have finished on the server — retry to see it."
+      : "No response from the server.",
+  };
 }
 
 export async function ask(payload: AskRequest): Promise<AskResponse> {

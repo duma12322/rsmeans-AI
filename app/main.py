@@ -6,6 +6,7 @@ import time
 import uuid
 import queue
 import asyncio
+import tempfile
 import threading
 import unicodedata
 from typing import Optional
@@ -37,7 +38,7 @@ app.add_middleware(
 # correr el scraper en un hilo dedicado con su propio Proactor loop.
 _executor = ThreadPoolExecutor(max_workers=1)
 
-# Multi-turn conversation state, in memory:
+# Multi-turn conversation state:
 #   {session_id: {"question", "answers", "locked_path", "candidates", "last_seen"}}
 # Each clarification turn re-runs routing with the original question PLUS every
 # answer (for wording), while `locked_path` records the branch the user has
@@ -46,14 +47,68 @@ _executor = ThreadPoolExecutor(max_workers=1)
 # This store is bounded so abandoned conversations can't leak memory:
 #   - TTL: a session idle longer than SESSION_TTL is purged on the next request.
 #   - Cap: at most MAX_SESSIONS live at once; the least-recently-seen is evicted.
-# A lock guards the dict so concurrent requests can't corrupt it. NOTE: this is
-# still in-process — it does NOT survive a restart and does NOT work across
-# multiple uvicorn workers (run a single worker, or move to an external store).
+# A lock guards the dict so concurrent requests can't corrupt it.
+#
+# The dict is ALSO mirrored to CONVERSATIONS_FILE on every mutation so an open
+# clarification survives a server restart (uvicorn --reload, a crash): otherwise
+# the frontend holds a session_id the backend forgot and the user has to retype
+# the whole question. It is NOT a substitute for an external store across MULTIPLE
+# uvicorn workers — each worker would still write its own file. With one worker
+# (which the single RSMeans account forces anyway) that's a non-issue.
 SESSION_TTL = 600        # seconds of inactivity before a conversation is dropped
 MAX_SESSIONS = 500       # hard ceiling on concurrent conversations
 
-_SESSIONS = {}
+CONVERSATIONS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "conversations.json"
+)
+
 _SESSIONS_LOCK = threading.Lock()
+
+
+def _persist_sessions_locked():
+    """Write _SESSIONS to disk atomically. Caller MUST hold _SESSIONS_LOCK.
+
+    Same temp-file + os.replace dance as app/session.py: a concurrent reader (a
+    restart mid-write) never sees a truncated file. Best-effort — a disk error
+    must not take down a request, since the in-memory dict is still authoritative.
+    """
+    target_dir = os.path.dirname(os.path.abspath(CONVERSATIONS_FILE))
+    try:
+        fd, tmp = tempfile.mkstemp(dir=target_dir, prefix=".conversations.", suffix=".tmp")
+    except OSError:
+        return
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(_SESSIONS, f)
+        os.replace(tmp, CONVERSATIONS_FILE)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _load_sessions():
+    """Load persisted conversations on startup, dropping any already past TTL.
+
+    A malformed/partial file (or none) yields an empty store rather than crashing
+    boot — a lost conversation history is recoverable; a server that won't start
+    is not."""
+    try:
+        with open(CONVERSATIONS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    now = time.time()
+    return {
+        sid: v for sid, v in data.items()
+        if isinstance(v, dict) and now - v.get("last_seen", 0) <= SESSION_TTL
+    }
+
+
+_SESSIONS = _load_sessions()
 
 
 def _get_session(session_id):
@@ -63,11 +118,14 @@ def _get_session(session_id):
         return None
     now = time.time()
     with _SESSIONS_LOCK:
-        for sid in [s for s, v in _SESSIONS.items() if now - v["last_seen"] > SESSION_TTL]:
+        expired = [s for s, v in _SESSIONS.items() if now - v["last_seen"] > SESSION_TTL]
+        for sid in expired:
             _SESSIONS.pop(sid, None)
         sess = _SESSIONS.get(session_id)
         if sess is not None:
             sess["last_seen"] = now
+        if expired:
+            _persist_sessions_locked()
         return sess
 
 
@@ -84,12 +142,14 @@ def _create_session(question):
             "locked_path": [], "candidates": [], "candidate_kind": None,
             "last_seen": now,
         }
+        _persist_sessions_locked()
         return sid, _SESSIONS[sid]
 
 
 def _drop_session(session_id):
     with _SESSIONS_LOCK:
-        _SESSIONS.pop(session_id, None)
+        if _SESSIONS.pop(session_id, None) is not None:
+            _persist_sessions_locked()
 
 
 def _run_scraper(question: str, start_path, progress=None, cancel=None):
@@ -272,6 +332,11 @@ def _prepare_turn(req: "AskRequest"):
                 if chosen and chosen not in sess["locked_path"]:
                     sess["locked_path"].append(chosen)
 
+        # Persist the new answer / locked branch now, so a crash DURING the
+        # (potentially long) scrape doesn't lose this turn's progress.
+        with _SESSIONS_LOCK:
+            _persist_sessions_locked()
+
     combined = route_query or _combined_text(sess)
     return sid, sess, combined, None
 
@@ -286,6 +351,7 @@ def _finalize_turn(sid, sess, result):
             sess["candidates"] = result.get("candidates", [])
             sess["candidate_kind"] = result.get("match_type", "division")
             sess["last_seen"] = time.time()
+            _persist_sessions_locked()
         result["session_id"] = sid
         result["locked_path"] = list(sess["locked_path"])
         return result
