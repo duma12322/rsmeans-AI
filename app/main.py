@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.scraper import start_browser
-from app.navigator import chapter_reference
+from app.navigator import chapter_reference, _extract_code
 
 app = FastAPI()
 
@@ -297,6 +297,7 @@ def _prepare_turn(req: "AskRequest"):
     sess = _get_session(req.session_id)
     if sess is not None:
         sid = req.session_id
+        had_session = True
     else:
         if not question:
             return None, None, None, {
@@ -304,12 +305,28 @@ def _prepare_turn(req: "AskRequest"):
                 "message": "Send a 'question' to start, or a valid 'session_id' to continue.",
             }
         sid, sess = _create_session(question)
+        had_session = False
 
     # `route_query` overrides what we route on this turn — set when the user
     # confirms one of the ITEM candidates (we route straight to its line number).
     route_query = None
 
     if answer:
+        # A typed answer that is itself an explicit RSMeans code (6+ digits) is a
+        # NEW, self-contained lookup — not a refinement of the prior question. If
+        # we appended it, "142713104576" then "01427131045" would fuse into one
+        # nonsense code. So start a fresh session on the code instead. Exception:
+        # confirming an OFFERED item candidate by its line number is a valid pick
+        # (handled below), so don't reset in that case.
+        picks_offered_item = bool(
+            sess.get("candidate_kind") == "item"
+            and _pick_item(answer, sess.get("candidates", []))
+        )
+        if had_session and _extract_code(answer) and not picks_offered_item:
+            _drop_session(sid)
+            sid, sess = _create_session(answer)
+            return sid, sess, answer, None
+
         sess["answers"].append(answer)
 
         # 1) Confirming a previously-offered item -> route directly to its line.
