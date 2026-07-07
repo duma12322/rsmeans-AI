@@ -4,10 +4,32 @@ from concurrent.futures import ThreadPoolExecutor
 from app.tree_loader import load_tree
 from app.tree_ai import choose_node, english_search_term, names_object
 from app.knowledge_layer import formatting_guidance
-from app.knowledge_records import resolve_code, search_items, _MATERIAL_SYNONYMS
+from app.knowledge_records import (
+    resolve_code,
+    search_items,
+    items_under,
+    _MATERIAL_SYNONYMS,
+)
 from app.cancellation import check_cancel
 
 TREE = load_tree()
+
+
+def _candidate_preview(path_codes, limit=3, max_chars=140):
+    """A short DESCRIPTION for a candidate code: a sample of the real catalog
+    line-items beneath it, so an offered option shows what it actually contains
+    (not just a terse section name). Empty string when we have no records under
+    it (e.g. records not built for that branch)."""
+    try:
+        items = items_under(list(path_codes), limit=limit)
+    except Exception:  # noqa: BLE001 - a preview is best-effort, never fatal
+        items = []
+    if not items:
+        return ""
+    text = "; ".join(items)
+    if len(text) > max_chars:
+        text = text[:max_chars].rsplit(" ", 1)[0] + "…"
+    return text
 
 # Penalty added to a hop's cost based on how sure the AI was about it. A low-confidence hop makes 
 # its whole branch more expensive, so beam search naturally prefers paths it was confident about.
@@ -173,7 +195,9 @@ def build_clarification_response(question, path, meta):
     ]
     for c in candidates:
         tag = "  (best match)" if best and c["code"] == best["code"] else ""
-        lines.append(f"* {c['code']} - {c['name']}{tag}")
+        desc = c.get("description")
+        detail = f" — {desc}" if desc else ""
+        lines.append(f"* {c['code']} - {c['name']}{tag}{detail}")
 
     if questions:
         lines += ["", "To determine which is correct, I need to ask a few additional questions:", ""]
@@ -358,8 +382,12 @@ def select_level(question, path):
 
     by_code = {o["code"]: o["name"] for o in options}
     # Candidate matches we found, names attached, top 3 — kept even if ambiguous.
+    # Each also gets a `description`: a preview of the real line-items under that
+    # code, so an offered option shows what it contains, not just its bare code.
     candidates = [
-        {"code": c, "name": by_code[c]} for c in ranked if c in by_code
+        {"code": c, "name": by_code[c],
+         "description": _candidate_preview(path + [c])}
+        for c in ranked if c in by_code
     ][:3]
 
     # Ambiguous = the AI explicitly asked follow-up questions, OR we found no
@@ -948,7 +976,11 @@ def find_path(question, start_path=None, beam_width=3, max_depth=10, cancel=None
             # Capture the frontier decision (first level below the lock) for a
             # possible clarification reply.
             if len(cand["path"]) == base_len:
-                root_candidates = [{"code": c, "name": by_code[c]} for c in top]
+                root_candidates = [
+                    {"code": c, "name": by_code[c],
+                     "description": _candidate_preview(cand["path"] + [c])}
+                    for c in top
+                ]
                 root_questions = result["clarify_questions"]
                 root_fallback = is_fallback
 

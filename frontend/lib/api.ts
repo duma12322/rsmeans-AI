@@ -17,6 +17,9 @@ export interface Row {
 export interface DivisionCandidate {
   code: string;
   name: string;
+  // A preview of the real line-items under this code, so the option shows what
+  // it contains next to its code — not just the bare section name.
+  description?: string;
 }
 
 export interface ItemCandidate {

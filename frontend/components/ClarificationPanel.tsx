@@ -64,6 +64,13 @@ export function ClarificationPanel({
                 <span className="mt-1 text-sm font-medium text-slate-800 group-hover:text-indigo-700 dark:text-slate-200 dark:group-hover:text-indigo-300">
                   {item ? c.description : c.name}
                 </span>
+                {/* Division/section options: a sample of the real items under
+                    this code, so it reads as "code — description". */}
+                {!item && c.description && (
+                  <span className="mt-0.5 line-clamp-2 text-xs text-slate-400 dark:text-slate-500">
+                    {c.description}
+                  </span>
+                )}
                 {item && (c.leaf_name || c.section) && (
                   <span className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
                     in {c.leaf_name || c.section}
