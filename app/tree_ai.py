@@ -71,6 +71,96 @@ def english_search_term(question, timeout=20):
 
 
 # =========================
+# SEARCH REFINEMENT SUGGESTIONS (too many hits)
+# =========================
+def suggest_refinements(question, descriptions, timeout=20):
+    """
+    A keyword search returned too many rows to be exact. Look at the user's
+    original request PLUS a sample of the descriptions we actually pulled, and
+    propose how to NARROW it: a couple of focused follow-up questions and a
+    handful of short descriptor terms the user can ADD to the query.
+
+    The suggestions must come from the real result set (not invented), so each
+    chip actually shrinks the list when appended. Returns:
+
+        {"questions": [str, ...], "refinements": [str, ...]}
+
+    Best-effort: returns empty lists on any failure so a noisy search still
+    renders (the caller falls back to the plain "add more detail" notice).
+    """
+    sample = [d for d in descriptions if d][:40]
+    if not sample:
+        return {"questions": [], "refinements": []}
+
+    listing = "\n".join(f"- {d}" for d in sample)
+    prompt = (
+        "A user searched an RSMeans construction cost catalog and got too many "
+        "results to be precise. Help them NARROW it.\n"
+        "Below is their request and a sample of the descriptions that matched. "
+        "Find the dimensions that vary across these rows (material, finish, size, "
+        "type, interior/exterior, use) and propose how to disambiguate.\n\n"
+        f"USER REQUEST: {question}\n\n"
+        f"SAMPLE OF MATCHING DESCRIPTIONS:\n{listing}\n\n"
+        "Return ONLY JSON, no prose, in exactly this shape:\n"
+        '{"questions": ["<short follow-up question>"], '
+        '"refinements": ["<short descriptor to add>"]}\n'
+        "Rules:\n"
+        "- 1-3 questions, each pointing at ONE distinguishing dimension.\n"
+        "- 4-8 refinements: short descriptor words/phrases (1-3 words each) that "
+        "actually appear as distinguishing traits in the sample, so ADDING one to "
+        "the request shrinks the results. No duplicates, no generic filler.\n"
+        "- Match the language of the user's request for the questions; keep "
+        "refinements as the catalog's English terms.\n"
+    )
+    try:
+        res = requests.post(
+            MARCE_API_URL,
+            headers={
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": "Return only the requested JSON object."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0,
+            },
+            timeout=timeout,
+        )
+        res.raise_for_status()
+        text = res.json()["choices"][0]["message"]["content"]
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if not m:
+            return {"questions": [], "refinements": []}
+        data = json.loads(m.group(0))
+
+        def _clean_list(key):
+            vals = data.get(key)
+            if not isinstance(vals, list):
+                return []
+            out, seen = [], set()
+            for v in vals:
+                if not isinstance(v, str):
+                    continue
+                v = v.strip().strip('"').strip("'")
+                k = v.lower()
+                if v and k not in seen:
+                    seen.add(k)
+                    out.append(v)
+            return out
+
+        return {
+            "questions": _clean_list("questions")[:3],
+            "refinements": _clean_list("refinements")[:8],
+        }
+    except Exception as e:  # noqa: BLE001 - refinement hints are best-effort
+        print(f"[tree_ai] suggest_refinements failed: {e}")
+        return {"questions": [], "refinements": []}
+
+
+# =========================
 # OBJECT vs. PROPERTIES CLASSIFIER
 # =========================
 def names_object(question, timeout=15):

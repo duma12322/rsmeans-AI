@@ -62,6 +62,14 @@ export interface OkResponse {
   shown_records?: number;
   truncated?: boolean;
   notice?: string | null;
+  // When truncated: AI-suggested follow-up questions and short descriptor chips.
+  // Clicking a chip appends to the original query via the kept session, re-running
+  // a narrower search. `continue_session` is the backend's explicit signal that the
+  // session is still open for refinement — it goes false once the refinement round
+  // cap is hit, so the frontend stops treating chips as follow-ups.
+  refine_questions?: string[];
+  refinements?: string[];
+  continue_session?: boolean;
 }
 
 // status === "needs_clarification": ambiguous, candidates + follow-up questions.

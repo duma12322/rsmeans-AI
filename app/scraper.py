@@ -12,6 +12,7 @@ from app.navigator import (
     build_broad_clarification,
     search_term,
 )
+from app.tree_ai import suggest_refinements
 from app.session import is_session_valid, save_session, SESSION_FILE
 from app.config import RS_EMAIL, RS_PASSWORD
 from app.cancellation import ScrapeCancelled, check_cancel as _check_cancel
@@ -769,12 +770,23 @@ async def scrape_search(question, term, progress=None, cancel=None):
 
             rows = await _read_grid_rows(page)
 
+            refine_questions = []
+            refinements = []
             if truncated:
                 notice = (
                     f"Found {total:,} matches — showing the first {len(rows)}. "
                     "That's a lot to be exact about; add more detail (the object, "
                     "material, size, or type) to get a shorter, more precise list."
                 )
+                # Guide the narrowing: ask the model, using the rows we actually
+                # pulled, which dimensions vary and what to add. Best-effort — a
+                # failure just leaves the plain notice above.
+                _check_cancel(cancel)
+                hints = suggest_refinements(
+                    question, [r.get("description", "") for r in rows]
+                )
+                refine_questions = hints["questions"]
+                refinements = hints["refinements"]
 
             if rows:
                 save_to_db(
@@ -802,6 +814,10 @@ async def scrape_search(question, term, progress=None, cancel=None):
                 "shown_records": len(rows),
                 "truncated": truncated,
                 "notice": notice,
+                # When truncated: AI-suggested ways to narrow, shown as clickable
+                # chips + follow-up questions that append to the original query.
+                "refine_questions": refine_questions,
+                "refinements": refinements,
             }
 
     except ScrapeCancelled:

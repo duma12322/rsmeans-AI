@@ -30,6 +30,10 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   // Set while a clarification conversation is open; sent back as session_id.
   const [sessionId, setSessionId] = useState<string | null>(null);
+  // True when the open session is a truncated-SEARCH refinement (not a
+  // clarification). In that mode only chip clicks continue the search; typing a
+  // fresh query in the box starts a NEW search instead of appending.
+  const [refineOnly, setRefineOnly] = useState(false);
   const feedEnd = useRef<HTMLDivElement>(null);
   // Aborts the in-flight /ask/stream request when the user hits Stop.
   const abortRef = useRef<AbortController | null>(null);
@@ -48,6 +52,7 @@ export default function Home() {
       const saved = JSON.parse(raw) as {
         turns?: Turn[];
         sessionId?: string | null;
+        refineOnly?: boolean;
       };
       const restored = (saved.turns ?? []).map((t) =>
         t.response
@@ -64,6 +69,7 @@ export default function Home() {
       );
       setTurns(restored);
       setSessionId(saved.sessionId ?? null);
+      setRefineOnly(saved.refineOnly ?? false);
     } catch {
       /* corrupt or unavailable storage: start fresh, not fatal */
     }
@@ -77,12 +83,12 @@ export default function Home() {
       else
         sessionStorage.setItem(
           STORAGE_KEY,
-          JSON.stringify({ turns, sessionId })
+          JSON.stringify({ turns, sessionId, refineOnly })
         );
     } catch {
       /* quota exceeded / storage disabled: degrade to in-memory only */
     }
-  }, [turns, sessionId]);
+  }, [turns, sessionId, refineOnly]);
 
   function scrollToEnd() {
     requestAnimationFrame(() =>
@@ -90,9 +96,17 @@ export default function Home() {
     );
   }
 
-  async function submit(text?: string) {
+  // `refine` marks a refinement of the current search (a chip click): it appends
+  // to the open session. Plain typing/examples leave it false — so in a
+  // truncated-search session, typed text starts a NEW search instead of being
+  // glued onto the old query. Clarification sessions always continue (they have
+  // no results yet, so the next message is necessarily an answer).
+  async function submit(text?: string, opts?: { refine?: boolean }) {
     const q = (text ?? input).trim();
     if (!q || loading) return;
+
+    const refine = opts?.refine ?? false;
+    const useSession = !!sessionId && (refine || !refineOnly);
 
     const id = crypto.randomUUID();
     setTurns((t) => [...t, { id, query: q, response: null }]);
@@ -107,7 +121,7 @@ export default function Home() {
 
     try {
       const res = await askStream(
-        sessionId ? { session_id: sessionId, answer: q } : { question: q },
+        useSession ? { session_id: sessionId!, answer: q } : { question: q },
         (phase) =>
           setTurns((t) =>
             t.map((turn) => (turn.id === id ? { ...turn, phase } : turn))
@@ -118,9 +132,20 @@ export default function Home() {
       setTurns((t) =>
         t.map((turn) => (turn.id === id ? { ...turn, response: res } : turn))
       );
-      setSessionId(
-        res.status === "needs_clarification" ? res.session_id : null
-      );
+      // Keep the session alive while clarifying, and for a truncated search that
+      // is still open for refinement (`continue_session`) — so a chip click
+      // appends to the original query. `refineOnly` records which kind of open
+      // session it is, so typed text is routed correctly (continue vs. new).
+      if (res.status === "needs_clarification") {
+        setSessionId(res.session_id);
+        setRefineOnly(false);
+      } else if (res.status === "ok" && res.continue_session) {
+        setSessionId(res.session_id ?? null);
+        setRefineOnly(true);
+      } else {
+        setSessionId(null);
+        setRefineOnly(false);
+      }
     } catch (e) {
       // User stopped the request: keep the turn (query + record) but swap the
       // loading card for a "paused" notice instead of erasing everything.
@@ -167,6 +192,7 @@ export default function Home() {
     abortRef.current?.abort();
     setTurns([]);
     setSessionId(null);
+    setRefineOnly(false);
     setInput("");
   }
 
@@ -256,6 +282,7 @@ export default function Home() {
                 <ResultView
                   data={turn.response}
                   onSuggest={submit}
+                  onRefine={(t) => submit(t, { refine: true })}
                   onRetry={() => submit(turn.query)}
                 />
               ) : (
@@ -275,7 +302,7 @@ export default function Home() {
           onSubmit={() => submit()}
           onCancel={cancel}
           loading={loading}
-          clarifying={sessionId !== null}
+          clarifying={sessionId !== null && !refineOnly}
         />
         <p className="mt-2 text-center text-[11px] text-slate-400 dark:text-slate-500">
           Prices are scraped live from RSMeans Online. This may open a browser

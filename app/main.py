@@ -57,6 +57,7 @@ _executor = ThreadPoolExecutor(max_workers=1)
 # (which the single RSMeans account forces anyway) that's a non-issue.
 SESSION_TTL = 600        # seconds of inactivity before a conversation is dropped
 MAX_SESSIONS = 500       # hard ceiling on concurrent conversations
+REFINE_MAX_ROUNDS = 3    # refinement rounds on a still-broad search before we stop
 
 CONVERSATIONS_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "conversations.json"
@@ -354,6 +355,38 @@ def _finalize_turn(sid, sess, result):
             _persist_sessions_locked()
         result["session_id"] = sid
         result["locked_path"] = list(sess["locked_path"])
+        return result
+
+    # A truncated keyword search DID answer, but with too many rows to be exact.
+    # Keep the session alive so the user's next REFINEMENT (a chip click) is
+    # APPENDED to the original query and re-run as a narrower search. Each stored
+    # answer is one refinement round; after REFINE_MAX_ROUNDS still-broad rounds
+    # we stop refining this query so it can't loop forever — the user starts a
+    # fresh search instead. No candidates to lock — the answer is just extra
+    # search words (see `_combined_text`).
+    if isinstance(result, dict) and result.get("truncated"):
+        rounds = len(sess.get("answers", []))
+        if rounds < REFINE_MAX_ROUNDS:
+            with _SESSIONS_LOCK:
+                sess["candidates"] = []
+                sess["candidate_kind"] = "search"
+                sess["last_seen"] = time.time()
+                _persist_sessions_locked()
+            result["session_id"] = sid
+            result["continue_session"] = True
+            return result
+        # Round cap reached and still broad: stop the refinement loop. Drop the
+        # session, clear the now-dead chips/questions, and leave a terminal notice.
+        shown = result.get("shown_records") or len(result.get("rows") or [])
+        result["refinements"] = []
+        result["refine_questions"] = []
+        result["continue_session"] = False
+        result["notice"] = (
+            f"Still a broad match — showing the closest {shown}. "
+            "Start a new search to change tack."
+        )
+        _drop_session(sid)
+        result["session_id"] = sid
         return result
 
     # Answered (or errored): the conversation is done, drop the session.

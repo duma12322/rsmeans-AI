@@ -5,16 +5,21 @@ import { MatchedLineCard } from "./MatchedLineCard";
 import { ResultsTable } from "./ResultsTable";
 import { ClarificationPanel } from "./ClarificationPanel";
 import { GuidancePanel } from "./GuidancePanel";
+import { RefinePanel } from "./RefinePanel";
 
 // Renders one backend response, branching on `status`. `onSuggest` feeds text
 // back into the input (clicking a candidate / example / question answer).
 export function ResultView({
   data,
   onSuggest,
+  onRefine,
   onRetry,
 }: {
   data: AskResponse;
   onSuggest: (text: string) => void;
+  // Refinement of a truncated search (a chip click). Distinct from onSuggest so
+  // it continues the open search session instead of starting a new query.
+  onRefine?: (text: string) => void;
   onRetry?: () => void;
 }) {
   if (data.status === "error") {
@@ -81,13 +86,20 @@ export function ResultView({
 
       {data.matched_line && <MatchedLineCard row={data.matched_line} />}
 
-      {/* Too many search hits to be exact: show what we pulled and nudge the
-          user to narrow it down. */}
-      {data.notice && (
-        <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
-          <InfoIcon />
-          <span>{data.notice}</span>
-        </div>
+      {/* Too many search hits to be exact. While the search session is still open
+          for refinement, show the guided RefinePanel (chips + questions + a
+          free-text box) so the user can always narrow — even if the AI returned
+          no suggestions. Once refinement is exhausted (`continue_session` false)
+          we fall back to the plain terminal notice. Rows stay visible either way. */}
+      {data.truncated && data.continue_session ? (
+        <RefinePanel data={data} onRefine={onRefine ?? onSuggest} />
+      ) : (
+        data.notice && (
+          <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+            <InfoIcon />
+            <span>{data.notice}</span>
+          </div>
+        )
       )}
 
       {/* Show the table when there's more than the single matched line. */}
