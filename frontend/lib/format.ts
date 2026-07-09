@@ -12,6 +12,20 @@ export function currency(value: number | null | undefined): string {
   });
 }
 
+// The Bare Total / Total O&P columns are NOT always dollars: RSMeans flags some
+// rows (cost adjustments, add-ons) as percentages. For those, render "10%" — not
+// "$10.00" — so the value isn't misread as money. Everything else is currency.
+export function amount(
+  value: number | null | undefined,
+  isPercent?: boolean
+): string {
+  if (value === null || value === undefined || value === 0) return "—";
+  if (isPercent) {
+    return `${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}%`;
+  }
+  return currency(value);
+}
+
 // "265613102870" -> "26 56 13 10 28 70" for readability (RSMeans 2+2+2+2+2+2).
 export function prettyLine(line: string): string {
   const digits = (line || "").replace(/\D/g, "");

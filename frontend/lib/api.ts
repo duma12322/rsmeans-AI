@@ -15,6 +15,9 @@ export interface Row {
   unit: string;
   bare_total: number | null;
   total_op: number | null;
+  // True when bare_total / total_op are PERCENTAGES (a cost adjustment), not
+  // dollars — render them as "10%" instead of "$10.00".
+  is_percent?: boolean;
 }
 
 export interface DivisionCandidate {

@@ -210,6 +210,9 @@ _GRID_COLS = {
     "unit": "grid_UnitOfMeasureCode",
     "bare_total": "grid_Total",
     "total_op": "grid_TotalOP",
+    # Hidden per-row flag: "true" when Bare Total / Total O&P are PERCENTAGES (a
+    # cost adjustment / add-on), not dollar amounts. Drives how the UI formats them.
+    "percent_line": "grid_PercentLine",
 }
 
 
@@ -264,6 +267,10 @@ async def _read_grid_rows(page):
         if not description:
             continue
 
+        is_percent = (
+            await _col_value(row, _GRID_COLS["percent_line"])
+        ).strip().lower() == "true"
+
         data.append({
             "line_number": await _col_value(row, _GRID_COLS["line_number"]),
             "description": description,
@@ -271,6 +278,7 @@ async def _read_grid_rows(page):
             "unit": await _col_value(row, _GRID_COLS["unit"]),
             "bare_total": clean_number(await _col_value(row, _GRID_COLS["bare_total"])),
             "total_op": clean_number(await _col_value(row, _GRID_COLS["total_op"])),
+            "is_percent": is_percent,
         })
 
     return data
@@ -370,15 +378,26 @@ def match_scraped_line(rows, code):
 
 
 def _with_display(row):
-    """Attach human-readable currency strings to a scraped row without losing the
-    raw numeric values. The frontend can show `*_display` (e.g. "$1,234.50") and
-    still keep `bare_total`/`total_op` for sorting or math."""
+    """Attach human-readable display strings without losing the raw numeric values.
+    Percentage rows (`is_percent`) render as "10%", everything else as currency
+    ("$1,234.50"); `bare_total`/`total_op` stay raw floats for sorting or math."""
     if not row:
         return row
+
+    def _display(value):
+        if row.get("is_percent"):
+            if value in (None, "", 0):
+                return None
+            try:
+                return f"{float(value):g}%"
+            except (TypeError, ValueError):
+                return None
+        return format_currency(value)
+
     return {
         **row,
-        "bare_total_display": format_currency(row.get("bare_total")),
-        "total_op_display": format_currency(row.get("total_op")),
+        "bare_total_display": _display(row.get("bare_total")),
+        "total_op_display": _display(row.get("total_op")),
     }
 
 

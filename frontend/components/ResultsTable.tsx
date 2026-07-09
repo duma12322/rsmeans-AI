@@ -2,7 +2,7 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import type { Row } from "@/lib/api";
-import { currency, prettyLine, rowToTsv } from "@/lib/format";
+import { amount, prettyLine, rowToTsv } from "@/lib/format";
 import { copyText } from "@/lib/clipboard";
 import { CopyButton } from "./CopyButton";
 
@@ -339,14 +339,14 @@ export function ResultsTable({
                       copyValue={String(r.bare_total)}
                       className="whitespace-nowrap text-right tabular-nums text-slate-700 dark:text-slate-300"
                     >
-                      {currency(r.bare_total)}
+                      {amount(r.bare_total, r.is_percent)}
                     </Cell>
                   ) : (
                     <td
                       title="No published bare price for this row"
                       className="whitespace-nowrap px-4 py-2 text-right tabular-nums text-slate-400 dark:text-slate-500"
                     >
-                      {currency(r.bare_total)}
+                      {amount(r.bare_total, r.is_percent)}
                     </td>
                   )}
                   {hasOp ? (
@@ -355,14 +355,14 @@ export function ResultsTable({
                       copyValue={String(r.total_op)}
                       className="whitespace-nowrap text-right font-medium tabular-nums text-slate-900 dark:text-slate-100"
                     >
-                      {currency(r.total_op)}
+                      {amount(r.total_op, r.is_percent)}
                     </Cell>
                   ) : (
                     <td
                       title="No published O&P price for this row"
                       className="whitespace-nowrap px-4 py-2 text-right font-medium tabular-nums text-slate-400 dark:text-slate-500"
                     >
-                      {currency(r.total_op)}
+                      {amount(r.total_op, r.is_percent)}
                     </td>
                   )}
                   <td className="px-2 py-2 text-right">

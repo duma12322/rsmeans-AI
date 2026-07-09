@@ -1,5 +1,5 @@
 import type { Row } from "@/lib/api";
-import { currency, prettyLine } from "@/lib/format";
+import { amount, prettyLine } from "@/lib/format";
 import { CopyButton } from "./CopyButton";
 
 // The single, exact line the user asked for (direct code lookup). Highlighted
@@ -34,8 +34,17 @@ export function MatchedLineCard({ row }: { row: Row }) {
         )}
 
         <div className="mt-4 grid grid-cols-2 gap-3">
-          <PriceTile label="Bare total" value={row.bare_total} />
-          <PriceTile label="Total incl. O&P" value={row.total_op} accent />
+          <PriceTile
+            label="Bare total"
+            value={row.bare_total}
+            isPercent={row.is_percent}
+          />
+          <PriceTile
+            label="Total incl. O&P"
+            value={row.total_op}
+            isPercent={row.is_percent}
+            accent
+          />
         </div>
       </div>
     </div>
@@ -46,10 +55,12 @@ function PriceTile({
   label,
   value,
   accent,
+  isPercent,
 }: {
   label: string;
   value: number | null;
   accent?: boolean;
+  isPercent?: boolean;
 }) {
   const hasValue = value !== null && value !== undefined && value !== 0;
   return (
@@ -82,7 +93,7 @@ function PriceTile({
             : "text-slate-800 dark:text-slate-200"
         }`}
       >
-        {currency(value)}
+        {amount(value, isPercent)}
       </div>
     </div>
   );
