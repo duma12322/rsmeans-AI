@@ -9,6 +9,9 @@ export type Confidence = "high" | "medium" | "low";
 export interface Row {
   line_number: string;
   description: string;
+  // RSMeans outline depth (0 = section header, higher = deeper sub-item), used to
+  // indent nested descriptions like the source grid. Optional for older payloads.
+  indent?: number;
   unit: string;
   bare_total: number | null;
   total_op: number | null;

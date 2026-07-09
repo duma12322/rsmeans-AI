@@ -118,6 +118,10 @@ export function ResultsTable({
   // The cap runs AFTER filter/sort, so "show more" reveals the rest of the
   // *current* view, not the raw list.
   const shown = view.slice(0, visibleCount);
+  // The RSMeans outline indentation only makes sense in the original order.
+  // Once the user sorts or filters, the parent headers may be gone/reordered, so
+  // we flatten to the left margin instead of showing misleading indents.
+  const outline = !sort && !q;
   const hiddenCount = view.length - shown.length;
   const nextStep = Math.min(STEP, hiddenCount);
   const canExpand = hiddenCount > 0;
@@ -303,7 +307,18 @@ export function ResultsTable({
                     copyValue={r.description}
                     className="text-slate-800 dark:text-slate-200"
                   >
-                    {highlight(r.description, marks)}
+                    {/* Reproduce the RSMeans outline: deeper sub-items get more
+                        left padding (16px per level). indent 0 = section header. */}
+                    <span
+                      className="inline-block"
+                      style={
+                        outline && r.indent
+                          ? { paddingLeft: `${r.indent * 16}px` }
+                          : undefined
+                      }
+                    >
+                      {highlight(r.description, marks)}
+                    </span>
                   </Cell>
                   {r.unit ? (
                     <Cell

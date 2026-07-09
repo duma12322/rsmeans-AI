@@ -220,6 +220,32 @@ async def _col_value(row, col_id):
     return normalize(await get_cell_value(cell))
 
 
+async def _read_description(row):
+    """
+    Return (text, indent) for the Description cell.
+
+    RSMeans encodes the outline nesting as a CSS class on an inner div:
+    `<div class="ind2">Aluminum pole, 8' high</div>`. A deeper sub-item has a
+    higher number; a top-level header has no `indN` div (indent 0). We surface
+    that depth so the UI can reproduce the indented outline the site shows,
+    instead of flattening every row to the left margin.
+    """
+    cell = await row.query_selector(f'td[aria-describedby="{_GRID_COLS["description"]}"]')
+    if not cell:
+        return "", 0
+
+    text = normalize(await get_cell_value(cell))
+
+    indent = 0
+    inner = await cell.query_selector('div[class*="ind"]')
+    if inner:
+        cls = await inner.get_attribute("class") or ""
+        m = re.search(r"\bind(\d+)\b", cls)
+        if m:
+            indent = int(m.group(1))
+    return text, indent
+
+
 async def _read_grid_rows(page):
     """Read the line-items currently rendered in the jqGrid body — no waiting.
     Split out from scrape_grid so the search path can re-read the grid after it
@@ -232,7 +258,7 @@ async def _read_grid_rows(page):
 
     for row in rows:
 
-        description = await _col_value(row, _GRID_COLS["description"])
+        description, indent = await _read_description(row)
 
         # Rows without a description are grid chrome, not line-items.
         if not description:
@@ -241,6 +267,7 @@ async def _read_grid_rows(page):
         data.append({
             "line_number": await _col_value(row, _GRID_COLS["line_number"]),
             "description": description,
+            "indent": indent,
             "unit": await _col_value(row, _GRID_COLS["unit"]),
             "bare_total": clean_number(await _col_value(row, _GRID_COLS["bare_total"])),
             "total_op": clean_number(await _col_value(row, _GRID_COLS["total_op"])),
