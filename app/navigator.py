@@ -1,4 +1,5 @@
 import re
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
 from app.tree_loader import load_tree
@@ -9,6 +10,8 @@ from app.knowledge_records import (
     search_items,
     items_under,
     _MATERIAL_SYNONYMS,
+    _SEARCH_STOPWORDS,
+    _stem,
 )
 from app.cancellation import check_cancel
 
@@ -687,44 +690,204 @@ def build_item_clarification(question, candidates):
     }
 
 
-def build_broad_clarification(question, term):
-    """
-    needs_clarification response for a SINGLE broad word ("steel", "security").
+# Size/dimension chips exactly as they appear in RSMeans descriptions: a number
+# with an inch/foot mark, a fraction, or a unit ('2"', '1-1/4"', "8'", '40 gal',
+# '200 amp'). The trailing mark/unit is REQUIRED, so a bare line/page number can
+# never become a chip (the "2" vs 2\" problem).
+_SIZE_CHIP_RE = re.compile(
+    r'\d+(?:-\d+/\d+)?(?:/\d+)?\s*"'
+    r"|\d+\s*'"
+    r"|\d+\s*(?:gal|amp|amps|ga|gauge|hp|ton|tons|mbh|psi|kw|mm|cm|volt|volts|"
+    r"lb|lbs|oz|watt|watts)\b",
+    re.IGNORECASE,
+)
 
-    One bare word matches too many unrelated lines to navigate to or to browse
+# Generic words that never read as a useful characteristic on their own —
+# section boilerplate, connectives and filler that survive tokenizing but say
+# nothing distinguishing about the item.
+_CHIP_STOPWORDS = _SEARCH_STOPWORDS | _MEASURE_WORDS | {
+    "size", "type", "unit", "system", "assembly", "material", "std", "reqd",
+    "incl", "excl", "min", "max", "avg", "ea", "set", "job", "add", "deduct",
+    "not", "including", "includes", "included", "excluding", "less", "plus",
+    "than", "one", "two", "three", "four", "note", "priced", "above", "below",
+    "same", "other", "any", "all", "use", "used", "using",
+    "are", "was", "were", "has", "have", "had", "will", "can", "may", "per",
+    "its", "this", "that", "from", "into", "onto", "over", "under", "each",
+}
+
+
+def _characteristic_chips(descriptions, term, per_group=3, limit=9):
+    """
+    Extract distinguishing CHARACTERISTIC chips straight from the catalog line
+    descriptions we already have — no AI, deterministic, always available.
+
+    Pulls a SPREAD across the main kinds of trait rather than a single dimension:
+    MATERIAL (steel, copper…), SIZE/dimension (2", 1-1/4", 40 gal) and TYPE/other
+    descriptor words (repair, flexible, drain…). Each candidate is ranked by how
+    many of the matching lines carry it — a trait shared by many lines is the most
+    useful next filter — and we keep the top `per_group` of EACH kind so material
+    never crowds out size or type.
+
+    Returns (chips, questions): the flat chip list (material, then size, then
+    type; capped at `limit`) plus one grounded "what to consider" question per
+    trait kind actually found, each seeded with real examples.
+    """
+    term_words = set(re.findall(r"[a-z0-9]+", term.lower()))
+    term_stems = {_stem(t) for t in term_words}
+    materials, sizes, types = Counter(), Counter(), Counter()
+    # Maps a TYPE word's normalized (singular) key to the actual surface forms
+    # seen, so we can dedupe "wire"/"wires" under one key yet DISPLAY a real word
+    # (the most common form) — never an invented stem like "wir".
+    type_forms = {}
+
+    def _type_key(w):
+        # Light singular for dedup only: strip a single trailing 's'. Never shown.
+        return w[:-1] if len(w) > 4 and w.endswith("s") else w
+
+    def _is_term_variant(w):
+        # The term itself, its plural/singular, or a word that merely CONTAINS the
+        # term as a substring — search_items' substring fallback drags in e.g.
+        # "aggregate" for "gate" or "doors"/"indoor" for "door". None of these
+        # read as a distinguishing trait, so drop them.
+        return (
+            w in term_words
+            or _stem(w) in term_stems
+            or any(len(t) >= 4 and (t in w or w in t) for t in term_words)
+        )
+
+    for d in descriptions:
+        low = d.lower()
+        seen = set()  # count each trait once per line (document frequency)
+
+        for raw in _SIZE_CHIP_RE.findall(low):
+            norm = re.sub(r"\s+", "", raw)
+            if norm not in seen:
+                seen.add(norm)
+                sizes[norm] += 1
+
+        for w in re.findall(r"[a-z]+", low):
+            if len(w) < 3 or w in seen or _is_term_variant(w):
+                continue
+            if w in _MATERIAL_WORDS:
+                seen.add(w)
+                materials[w] += 1
+            elif w not in _CHIP_STOPWORDS:
+                # Key TYPE words by their singular so "wire"/"wires" are one chip,
+                # but remember the real surface forms to display later.
+                key = _type_key(w)
+                if key not in seen:
+                    seen.add(key)
+                    types[key] += 1
+                    type_forms.setdefault(key, Counter())[w] += 1
+
+    mats = [w for w, _ in materials.most_common(per_group)]
+    szs = [w for w, _ in sizes.most_common(per_group)]
+    # Display the most common real surface form for each winning type key.
+    typs = [
+        type_forms[key].most_common(1)[0][0]
+        for key, _ in types.most_common(per_group)
+    ]
+
+    chips, seen = [], set()
+    for c in mats + szs + typs:
+        k = c.lower()
+        if c and k not in seen:
+            seen.add(k)
+            chips.append(c)
+
+    questions = []
+    if mats:
+        questions.append(f"What material — e.g. {', '.join(mats)}?")
+    if szs:
+        questions.append(f"What size or dimension — e.g. {', '.join(szs)}?")
+    if typs:
+        questions.append(f"What type or use — e.g. {', '.join(typs)}?")
+
+    return chips[:limit], questions
+
+
+def build_broad_clarification(question, term, broad_kind="property"):
+    """
+    needs_clarification response for a query that's too broad to route to a price.
+    Two shapes, chosen by `broad_kind`:
+
+      "property" — a bare material/finish/property with NO object ("steel",
+                   "security"): we ask WHICH object it belongs to.
+      "object"   — a single generic object word with no distinguishing detail
+                   ("pipe", "gate"): the item is named but not which one, so we
+                   ask for a material/size/type.
+
+    Either way the word matches too many unrelated lines to navigate to or browse
     usefully, so instead of guessing a branch (a confidently wrong price) or
-    flooding the user with the whole catalog, we ask them to ADD a detail — the
-    item it's part of, its type, material, size, or use — and complete the
-    search. The follow-up answer is combined with this word server-side, so
-    "steel" + "gate" routes as "steel gate".
+    flooding the user with the whole catalog, we ask them to ADD one detail and
+    complete the search. The follow-up answer is combined with this word
+    server-side, so "steel" + "gate" routes as "steel gate", and "pipe" +
+    "copper" as "pipe copper".
     """
     term = (term or "").strip() or str(question).strip()
     guide = formatting_guidance()
 
-    lines = [
-        f"“{term}” only describes a material or property — it doesn't say WHAT "
-        "the item is. That could be a sink, a pipe, a cabinet, a countertop… "
-        "each with a very different price.",
-        "",
-        "Tell me the object and I'll price it — I'll combine it with "
-        f"“{term}”. For example:",
-        "",
-        f"* {term} sink",
-        f"* {term} pipe",
-        f"* {term} countertop",
-    ]
+    # Catalog-derived characteristic chips + "what to consider" questions, so a
+    # broad object term gets the SAME guided-narrowing UX as a truncated search —
+    # but OFFLINE (no browser, no AI): the chips are pulled straight from the real
+    # line descriptions that match the term, spread across material / size / type,
+    # so they always appear and each genuinely shrinks the result set. Only for
+    # the object case ("pipe"): for a bare property the useful next step is naming
+    # the object, not adding a trait.
+    refinements, refine_questions = [], []
+    if broad_kind == "object":
+        matches = search_items(term, limit=80)
+        descriptions = [m["description"] for m in matches if m.get("description")]
+        if descriptions:
+            refinements, refine_questions = _characteristic_chips(descriptions, term)
+
+    if broad_kind == "object":
+        lines = [
+            f"“{term}” names the item but not WHICH one — there are many types, "
+            "sizes and materials, each with a very different price.",
+            "",
+            "Add one characteristic below — pick one or type your own — and I'll "
+            f"combine it with “{term}” for a precise price.",
+        ]
+        clarify = (
+            f"Which “{term}” exactly — what material, size, or type? Name one "
+            f"detail and I'll combine it with “{term}”."
+        )
+    else:
+        lines = [
+            f"“{term}” only describes a material or property — it doesn't say WHAT "
+            "the item is. That could be a sink, a pipe, a cabinet, a countertop… "
+            "each with a very different price.",
+            "",
+            "Tell me the object and I'll price it — I'll combine it with "
+            f"“{term}”. For example:",
+            "",
+            f"* {term} sink",
+            f"* {term} pipe",
+            f"* {term} countertop",
+        ]
+        clarify = (
+            f"What is the “{term}” for — which object? (e.g. a sink, a pipe, a "
+            "cabinet.) Name the item and I'll combine it with what you gave."
+        )
+
+    # Prefer the catalog-derived questions (they point at the dimensions that
+    # actually vary across the matching lines); fall back to the generic ask.
+    questions = refine_questions or [clarify]
 
     return {
         "status": "needs_clarification",
         "match_type": "too_broad",
+        "broad_kind": broad_kind,
         "question": question,
         "message": "\n".join(lines),
         "candidates": [],
         "best_match": None,
-        "clarify_questions": [
-            f"What is the “{term}” for — which object? (e.g. a sink, a pipe, a "
-            "cabinet.) Name the item and I'll combine it with what you gave."
-        ],
+        "clarify_questions": questions,
+        # Clickable characteristic chips (empty for the property case); the panel
+        # renders them the same way the truncated-search RefinePanel does.
+        "refinements": refinements,
+        "refine_questions": refine_questions,
         "confidence": "low",
         "how_to_ask": guide,
         "path_so_far": [],
@@ -777,6 +940,22 @@ def _rank_level(question, to_decide):
             for cand, options in to_decide
         ]
         return [f.result() for f in futures]
+
+
+def _is_broad_term(question, start_path=None):
+    """
+    True when the wording matches MANY real catalog lines — too broad to pinpoint.
+
+    Uses the SAME literal item search and threshold as the item-confirm shortcut
+    (`_item_candidates`), so a bare word that would flood a live search ("pipe")
+    is flagged, while one that maps to just a handful of lines is not (it still
+    flows to item-confirmation). An empty/absent knowledge base yields no strong
+    matches, so we report "not broad" and defer to the live search — no regression
+    where records aren't built.
+    """
+    matches = search_items(question, within_path=start_path or None, limit=60)
+    strong = [m for m in matches if m["score"] >= 1.0]
+    return len(strong) > 12
 
 
 def find_path(question, start_path=None, beam_width=3, max_depth=10, cancel=None):
@@ -873,16 +1052,30 @@ def find_path(question, start_path=None, beam_width=3, max_depth=10, cancel=None
             named is False if named is not None
             else all(w in _DESCRIPTOR_WORDS for w in _content)
         )
-        if only_properties:
+        # A single bare object word ("pipe", "gate", "sink") names the thing but
+        # not WHICH one — just as underspecified as a property-only query. When
+        # the catalog confirms it's broad (matches many lines), ask for ONE detail
+        # (material/size/type) instead of dumping a whole live search. A single
+        # word that pinpoints only a handful of items is NOT caught here — it
+        # flows to item-confirmation below, a better experience than asking.
+        single_broad_object = (
+            not only_properties
+            and len(_content) == 1
+            and _is_broad_term(question, start_path)
+        )
+        if only_properties or single_broad_object:
             term = " ".join(_content)
+            kind = "property" if only_properties else "object"
             src = "IA" if named is not None else "fallback lexico"
-            print(f"\n>>> Solo propiedades ({term!r}), sin nombrar el objeto "
+            reason = ("solo propiedades, sin nombrar el objeto" if only_properties
+                      else "objeto generico de una palabra, sin caracteristicas")
+            print(f"\n>>> Termino demasiado amplio ({term!r}): {reason} "
                   f"[{src}] -> pido aclaracion en vez de navegar/volcar todo <<<")
             return {
                 "path": [], "hops": [], "confidence": "low",
                 "candidates": [], "clarify_questions": [],
                 "fallback_used": False, "ambiguous": True,
-                "match_type": "too_broad", "term": term,
+                "match_type": "too_broad", "term": term, "broad_kind": kind,
             }
 
     # Second fast path: the wording literally matches real catalog items — show

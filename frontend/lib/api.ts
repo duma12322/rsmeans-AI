@@ -91,7 +91,15 @@ export interface ClarifyResponse {
   clarify_questions: string[];
   confidence: Confidence;
   how_to_ask: HowToAsk;
-  match_type?: "division" | "item";
+  match_type?: "division" | "item" | "too_broad";
+  // Which broad shape this is: "object" = a bare item word missing a detail
+  // ("pipe"), "property" = a material/finish with no object ("blue steel").
+  broad_kind?: "object" | "property";
+  // Clickable characteristic chips + "what to consider" questions for a broad
+  // object term, derived from the real catalog lines — clicking a chip appends
+  // it to the query via the open session (same guided narrowing as a search).
+  refinements?: string[];
+  refine_questions?: string[];
   session_id: string;
   locked_path?: string[];
 }

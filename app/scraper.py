@@ -543,7 +543,9 @@ def route_question(question, start_path=None, cancel=None):
     # Single broad word ("steel"): ask the user to add a detail instead of
     # navigating or dumping the whole catalog.
     if route and route.get("match_type") == "too_broad":
-        return route, build_broad_clarification(question, route.get("term"))
+        return route, build_broad_clarification(
+            question, route.get("term"), route.get("broad_kind", "property")
+        )
 
     # Text-match candidates: present the real items found, not divisions.
     if route and route.get("match_type") == "item" and route.get("ambiguous"):

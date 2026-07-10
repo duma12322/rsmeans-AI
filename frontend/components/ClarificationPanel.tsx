@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import type {
   ClarifyResponse,
   DivisionCandidate,
@@ -19,6 +22,18 @@ export function ClarificationPanel({
   onAnswer: (text: string) => void;
 }) {
   const { candidates, clarify_questions, best_match } = data;
+  // Characteristic chips for a broad object term ("pipe") — clicking one appends
+  // it to the query via the open session, exactly like the truncated-search
+  // RefinePanel. Present only for the too_broad "object" case.
+  const chips = data.refinements ?? [];
+  const [custom, setCustom] = useState("");
+
+  function addCustom() {
+    const t = custom.trim();
+    if (!t) return;
+    onAnswer(t);
+    setCustom("");
+  }
 
   return (
     <div className="space-y-5 rounded-xl border border-amber-200 bg-amber-50/40 p-5 dark:border-amber-500/30 dark:bg-amber-500/5">
@@ -33,10 +48,55 @@ export function ClarificationPanel({
           <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-400">
             {candidates.length > 0
               ? "Pick the closest match below, or answer a question to narrow it down."
-              : "Add a bit more detail below and I'll find it."}
+              : chips.length > 0
+                ? "Add a characteristic below — pick one or type your own — for a shorter, more precise result."
+                : "Add a bit more detail below and I'll find it."}
           </p>
         </div>
       </header>
+
+      {chips.length > 0 && (
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            Add a characteristic
+          </p>
+          <div className="mb-2 flex flex-wrap gap-2">
+            {chips.map((c) => (
+              <button
+                key={c}
+                onClick={() => onAnswer(c)}
+                className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-white px-3 py-1.5 text-sm text-indigo-700 transition hover:border-indigo-400 hover:bg-indigo-50 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-indigo-300 dark:hover:bg-indigo-500/10"
+              >
+                <span className="text-indigo-400">+</span>
+                {c}
+              </button>
+            ))}
+          </div>
+          {/* Free-text detail: type any characteristic not offered as a chip. It
+              appends to the query via the open session, same as a chip click. */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              addCustom();
+            }}
+            className="flex items-center gap-2"
+          >
+            <input
+              value={custom}
+              onChange={(e) => setCustom(e.target.value)}
+              placeholder="Type another detail — e.g. galvanized, 2 inch, drain"
+              className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:ring-indigo-500/20"
+            />
+            <button
+              type="submit"
+              disabled={!custom.trim()}
+              className="flex-none rounded-lg bg-indigo-600 px-3.5 py-1.5 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Add
+            </button>
+          </form>
+        </div>
+      )}
 
       {candidates.length > 0 && (
         <div className="grid gap-2 sm:grid-cols-2">
@@ -90,7 +150,7 @@ export function ClarificationPanel({
       {clarify_questions.length > 0 && (
         <div>
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-            A few questions
+            {chips.length > 0 ? "What to consider" : "A few questions"}
           </p>
           <ul className="space-y-1.5">
             {clarify_questions.map((q, i) => (
