@@ -530,9 +530,11 @@ def _search_term_heuristic(question):
     language: drop only a code, generic filler ("cost", "for", "necesito"…), and
     anything after a negation cue ("... no de plastico ni madera"). Material and
     descriptor words are KEPT — a keyword search must honour "steel scissors" as
-    steel scissors, not silently narrow it to "scissors" (the site then combines
-    the words per the search box's any/all mode). Words under 3 letters (Spanish
-    "de", "la") fall out naturally via the token pattern.
+    steel scissors, not silently narrow it to "scissors". The site runs the search
+    in "all" mode (every word must appear — an AND), so keeping both words is what
+    narrows the result to lines carrying both; an over-specified phrase that finds
+    nothing falls back to the clarification questions. Words under 3 letters
+    (Spanish "de", "la") fall out naturally via the token pattern.
     """
     text = re.sub(r"\d[\d.\s\-]{4,}\d", " ", str(question).lower())
     text = re.split(r"\b(?:not|no|sin|ni)\b", text)[0]

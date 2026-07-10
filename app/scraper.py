@@ -785,13 +785,15 @@ async def scrape_search(question, term, progress=None, cancel=None):
             emit("navigating")  # escribiendo el termino en el buscador de RSMeans
             print(f"\n>>> BUSQUEDA EN VIVO: escribiendo {term!r} en el buscador")
             await page.fill("#searchTextBox", term)
-            # "any" = a line matches if it contains AT LEAST ONE of the words, so a
-            # keyword query returns everything related instead of only the lines
-            # that carry the exact word combination (which forced the user to type
-            # the record's specific name). Broader by design; the SEARCH_MAX_ROWS
-            # cap + the "add more detail" notice keep a noisy result set in check.
+            # "all" = a line matches only if it contains EVERY word (an AND), which
+            # is also the site's own default. This is what makes "add a
+            # characteristic to narrow it down" actually work: refining "pipe" to
+            # "pipe steel" must SHRINK the set to lines carrying both words, not
+            # broaden it. ("any" is an OR — adding a word would return MORE rows,
+            # contradicting the guided-narrowing UX.) The SEARCH_MAX_ROWS cap + the
+            # "add more detail" notice still handle a single broad word.
             try:
-                await page.select_option("#drpSearch", "any")
+                await page.select_option("#drpSearch", "all")
             except Exception:
                 pass  # keep the site's default preference if the select changed
             await page.click("#search-btn1")
