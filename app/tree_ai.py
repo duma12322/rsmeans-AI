@@ -165,27 +165,38 @@ def suggest_refinements(question, descriptions, timeout=20):
 # =========================
 def names_object(question, timeout=15):
     """
-    Decide whether the text NAMES A PHYSICAL OBJECT to price, or gives ONLY its
-    PROPERTIES (material, finish, color, size, use) with no object named:
-    "stainless steel white" -> no object; "stainless steel sink" -> a sink.
+    Decide whether the text NAMES SOMETHING PRICEABLE — a physical object OR a
+    work activity/service/fee — or gives ONLY its ATTRIBUTES (material, finish,
+    color, size, use) with no subject to price:
+    "stainless steel white" -> no subject; "stainless steel sink" -> a sink;
+    "plumbing demolition" -> a service (demolition IS the priceable subject).
 
     A curated word list can't know every finish/color/adjective, so we let the
-    model judge — it has the world knowledge to tell an object from its
-    attributes. Returns:
-        True  -> an object/item is named (route it),
-        False -> only properties (ask the user WHICH object),
+    model judge — it has the world knowledge to tell a subject from its
+    attributes. The subject need NOT be a physical noun: RSMeans prices activities
+    and fees (demolition, surface preparation, cleaning, architectural fees), each
+    a specific catalog leaf, so those must route — not get bounced with "which
+    object?". False is reserved for attribute-only queries that fit any object.
+    Returns:
+        True  -> an object OR activity/service/fee is named (route it),
+        False -> only attributes, no subject (ask the user WHICH object),
         None  -> model unavailable/unparseable, so the caller falls back to its
                  heuristic. Classification must never break routing.
     """
     prompt = (
         "You screen searches for RSMeans, a construction cost catalog. Decide if "
-        "the text NAMES A PHYSICAL OBJECT/ITEM that can be priced (sink, pipe, "
-        "door, cabinet, gate, water heater, wall, countertop...), or gives ONLY "
-        "its PROPERTIES with NO object named — material, finish, color, size, or "
-        "use (steel, stainless, white, 6 inch, portable, security).\n"
-        "The text may be Spanish (lavaplatos = sink, tubo = pipe, puerta = door).\n"
+        "the text NAMES SOMETHING THAT CAN BE PRICED — either a physical "
+        "object/item (sink, pipe, door, cabinet, gate, water heater, wall, "
+        "countertop...) OR a work activity, service or fee (demolition, surface "
+        "preparation, cleaning, balancing, architectural fees...) — versus giving "
+        "ONLY ATTRIBUTES with NO subject to price: material, finish, color, size, "
+        "or use (steel, stainless, white, 6 inch, portable, security).\n"
+        "An activity/service/fee IS a valid subject: it maps to a specific catalog "
+        "line, so treat it as named (true), not as too-broad.\n"
+        "The text may be Spanish (lavaplatos = sink, tubo = pipe, puerta = door, "
+        "demolicion = demolition).\n"
         "Reply with ONLY JSON, no prose: "
-        '{"names_object": true|false, "object": "<the object noun, or null>"}.\n'
+        '{"names_object": true|false, "object": "<the object/activity, or null>"}.\n'
         "Examples:\n"
         '- "stainless steel" -> {"names_object": false, "object": null}\n'
         '- "stainless steel white" -> {"names_object": false, "object": null}\n'
@@ -194,7 +205,10 @@ def names_object(question, timeout=15):
         '- "stainless steel sink" -> {"names_object": true, "object": "sink"}\n'
         '- "lavaplatos de acero" -> {"names_object": true, "object": "lavaplatos"}\n'
         '- "steel folding gate" -> {"names_object": true, "object": "gate"}\n'
-        '- "paint interior walls" -> {"names_object": true, "object": "walls"}\n\n'
+        '- "paint interior walls" -> {"names_object": true, "object": "walls"}\n'
+        '- "plumbing demolition" -> {"names_object": true, "object": "demolition"}\n'
+        '- "architectural fees" -> {"names_object": true, "object": "fees"}\n'
+        '- "interior surface preparation" -> {"names_object": true, "object": "surface preparation"}\n\n'
         f"Text: {question}\nJSON:"
     )
     try:
