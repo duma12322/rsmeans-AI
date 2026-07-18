@@ -148,10 +148,21 @@ async def get_cell_value(cell):
 async def wait_rsmeans_data(page):
 
     # espera request real de jqGrid / search
+    #
+    # page.wait_for_response() NO existe en la API async de Playwright: la llamada
+    # lanzaba AttributeError al instante, en TODAS las busquedas, asi que esta
+    # espera nunca corrio y siempre se caia al respaldo del DOM de abajo. El
+    # nombre correcto es wait_for_event("response", ...). Importa porque sin esta
+    # espera el DOM puede seguir mostrando las filas de la busqueda ANTERIOR y las
+    # scrapeariamos como si fueran las nuevas — exactamente el modo de falla que
+    # este bloque ("CRITICAL FIX") fue escrito para evitar.
     try:
-        await page.wait_for_response(lambda r:
-            ("jqgrid" in r.url.lower() or "search" in r.url.lower())
-        , timeout=15000)
+        await page.wait_for_event(
+            "response",
+            predicate=lambda r: ("jqgrid" in r.url.lower()
+                                 or "search" in r.url.lower()),
+            timeout=15000,
+        )
     except Exception as e:
         # The XHR may have fired before we started listening, so this isn't fatal —
         # we still wait on the DOM below. But log it: a timeout here can also mean
