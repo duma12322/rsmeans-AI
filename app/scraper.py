@@ -904,9 +904,25 @@ async def start_browser(question, start_path=None, progress=None, cancel=None):
                 print("[start] termino demasiado amplio -> pido aclaracion "
                       "(sin abrir navegador)")
                 return clarification
-            # Ambiguous keyword query: behave like the RSMeans search box — type
-            # the keyword, scrape ALL matches, let the user browse. Only fall back
-            # to the follow-up questions if the live search finds nothing.
+            # Mid-conversation refinement: the user already committed to a branch,
+            # so DON'T run the live search. It would (a) retype the very same term
+            # — the codes they picked are stripped when building it, so every turn
+            # searched identically and fruitlessly, reopening Chromium each time —
+            # and (b) search the WHOLE catalog, ignoring their choice: a hit could
+            # come back from division 23 right after they picked 22, silently
+            # overriding them. Once a branch is locked, narrowing belongs to the
+            # tree walk, not the search box. This is also what keeps the promise in
+            # route_question's docstring that clarification turns never open a
+            # browser.
+            if start_path:
+                print(f"[start] refinamiento sobre rama {'>'.join(start_path)} -> "
+                      "aclaracion directa (sin navegador, sin busqueda repetida)")
+                return clarification
+            # First turn on an ambiguous keyword query: behave like the RSMeans
+            # search box — type the keyword, scrape ALL matches, let the user
+            # browse. Nothing is locked yet, so a catalog-wide search can't
+            # contradict a choice. Only fall back to the follow-up questions if the
+            # live search finds nothing.
             term = search_term(question)
             if term:
                 print(f"[start] consulta ambigua -> BUSQUEDA en vivo con {term!r}")

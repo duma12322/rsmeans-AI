@@ -406,6 +406,23 @@ def _finalize_turn(sid, sess, result):
         result["session_id"] = sid
         return result
 
+    # `needs_subject` IS a question to the user ("name the item you mean" — the
+    # query gave properties but no object). So the conversation must stay ALIVE
+    # for their answer, exactly like needs_clarification. Dropping it here meant
+    # the bot asked a question and then rejected the reply with "Send a
+    # 'question' to start, or a valid 'session_id'" — the most basic clarification
+    # path was the one you couldn't answer. There are no candidates to lock: the
+    # answer is just the missing subject, appended to the query (see
+    # `_combined_text`).
+    if isinstance(result, dict) and result.get("status") == "needs_subject":
+        with _SESSIONS_LOCK:
+            sess["candidates"] = []
+            sess["candidate_kind"] = "subject"
+            sess["last_seen"] = time.time()
+            _persist_sessions_locked()
+        result["session_id"] = sid
+        return result
+
     # Answered (or errored): the conversation is done, drop the session.
     _drop_session(sid)
     if isinstance(result, dict):

@@ -27,5 +27,8 @@ conversations.json
 division_records.json
 division_records.progress.json
 
+# Salidas generadas por los evals
+tests/eval_chatbot_results.json
+
 # Claude
 CLAUDE.md
