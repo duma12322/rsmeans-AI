@@ -464,6 +464,46 @@ _SEARCH_FILLER = {
     "find", "get", "need", "want", "looking", "search", "client", "clients",
     "customer", "asked", "please", "cost", "price", "for", "the", "some", "one",
     "made", "with", "without", "that", "were", "was", "are", "and",
+    # ---- Action verbs: what the user WANTS DONE, not what the catalog NAMES ----
+    # RSMeans descriptions name items ("Water heater, residential, electric"),
+    # they don't describe the action. Since the site searches in "all" (AND) mode,
+    # keeping the verb requires every result line to contain it — and these words
+    # appear in well under 0.3% of the 31,787 catalog descriptions, so the search
+    # returns nothing. Measured: "replace residential water heater" -> 0 hits,
+    # "residential water heater" -> 3. That empty result is what made an ambiguous
+    # question open the browser, search, find nothing, and fall back to the
+    # clarification anyway.
+    # Matching is by EXACT token, so the catalog's own nouns survive untouched:
+    # "excavation" (0.29%), "demolition" (0.26%), "installation", "painting".
+    # Deliberately NOT filtered — these ARE catalog words: paint, finish, add,
+    # cover, set, place, lay, remove/removal (used by the demolition lines), fix
+    # (as in "fixture"), build/building, clean, repair.
+    "replace", "replaces", "replacing", "replaced",
+    "install", "installs", "installing",
+    "demolish", "demolishing", "excavate", "excavating",
+    "pour", "pouring", "construct", "constructing",
+    "buy", "buying", "purchase", "purchasing", "hire", "quote", "estimate",
+    # Connectives that describe HOW the work is done ("...using a backhoe").
+    # Same AND-mode problem, same near-zero catalog frequency: "using" 0.07%,
+    # "via" 0.01%. NOT filtered: "per" (1.12%) and "use" (0.89%) are catalog words.
+    "using", "via",
+    # Interrogatives / auxiliaries from "How much does X cost?" — measured at
+    # 0.00% of catalog descriptions, so they can only ever subtract results.
+    "what", "how", "much", "many", "would", "could", "does", "will", "should",
+    "can", "about",
+    # Spelled-out units. The catalog writes the SYMBOL ('5/8"', "8'"), so the word
+    # itself is near-absent: inches 0.00%, feet 0.02%, foot 0.07%, inch 0.15%.
+    # Keeping them guaranteed an empty result, and the number is already dropped
+    # by the 3+ letter token pattern, so the size is not lost by removing them —
+    # it was never in the phrase. Units the catalog DOES spell out stay: "gallon"
+    # (0.62%), and material/capacity words in general.
+    "inch", "inches", "foot", "feet",
+    # Spanish
+    "cuanto", "cuanta", "cuantos", "cuantas", "cual", "cuales", "seria",
+    "pulgada", "pulgadas", "pie", "pies",
+    # Spanish
+    "reemplazar", "reemplazo", "instalar", "colocar", "poner", "comprar",
+    "construir", "demoler", "excavar", "cotizar", "presupuestar",
     # Spanish
     "encontrar", "buscar", "cliente", "clientes", "pidio", "necesito", "quiero",
     "era", "eran", "hecho", "hechas", "costo", "precio", "para", "con", "sin",
@@ -517,11 +557,19 @@ _COLOR_WORDS = {
 _DESCRIPTOR_WORDS = _MATERIAL_WORDS | _PROPERTY_WORDS | _COLOR_WORDS
 
 
-# Product decision: the chatbot is Spanish-facing and the search box receives
-# the phrase in the LANGUAGE THE USER TYPED — Spanish stays Spanish, no
-# translation. Flip to True to translate to English instead (RSMeans is an
-# English catalog, so English generally returns more matches).
-TRANSLATE_SEARCH_TO_ENGLISH = False
+# The model builds the search phrase (see english_search_term). Turned ON because
+# the heuristic below cannot solve the real problem: catalog descriptions are
+# TERSE ("Water heater, 40 gal.", "Gypsum board") and the site searches in "all"
+# (AND) mode, so a 5-6 word phrase can never match a 2-3 word description. The
+# heuristic has no length limit; the model prompt is explicitly capped at 2-4
+# words and picks the HEAD NOUN, which blind truncation cannot do — cutting
+# "gypsum board on metal studs" to its last two words yields "metal studs", the
+# wrong object entirely.
+#
+# Costs one model call per ambiguous search. english_search_term returns "" on any
+# failure, so _search_term_heuristic (still filler-filtered) remains the fallback
+# and a search is never lost. Set to False to go back to same-language searching.
+TRANSLATE_SEARCH_TO_ENGLISH = True
 
 
 def _search_term_heuristic(question):
@@ -544,6 +592,19 @@ def _search_term_heuristic(question):
     )
 
 
+def _strip_filler(phrase):
+    """
+    Drop the words that can only ever SUBTRACT results from an AND search: the
+    filler/verb/unit list, and stray single letters (the "x" left behind when
+    "2x4" is read as "tile x panels"). Everything else is kept — material and
+    descriptor words are what make a refinement narrow correctly.
+    """
+    return " ".join(
+        w for w in str(phrase).lower().split()
+        if w not in _SEARCH_FILLER and not (len(w) == 1 and w.isalpha())
+    )
+
+
 def search_term(question):
     """
     Decide what the AI types into the RSMeans search box.
@@ -552,11 +613,20 @@ def search_term(question):
     TRANSLATE_SEARCH_TO_ENGLISH). When translation is enabled, a model call turns
     "tijeras de seguridad de metal" into "safety scissors"; on failure it falls
     back to the same-language heuristic so a search always runs.
+
+    Either way the phrase goes through `_strip_filler`. The model's phrase needs it
+    just as much as the heuristic's: it kept units the catalog never spells out and
+    the search runs in "all" (AND) mode, so ONE absent word zeroes the whole query.
+    Measured live on RSMeans: "inch gypsum board metal studs" -> 0 rows,
+    "gypsum board metal studs" -> 57. It is the stray word that kills a search, not
+    the length — which is why we clean words instead of capping the phrase.
     """
     if TRANSLATE_SEARCH_TO_ENGLISH:
         term = english_search_term(question)
         if term:
-            return term
+            cleaned = _strip_filler(term)
+            # Never let cleaning empty the phrase: an unfiltered search beats none.
+            return cleaned or term
     return _search_term_heuristic(question)
 
 
