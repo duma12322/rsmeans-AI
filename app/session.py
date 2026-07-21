@@ -37,6 +37,25 @@ def is_session_valid():
     return age < SESSION_EXPIRATION
 
 
+def touch_session():
+    """Slide the cache window: mark the cached session as freshly used.
+
+    is_session_valid measures the session file's mtime, so bumping it to 'now'
+    AFTER a successful scrape means the SESSION_EXPIRATION window counts from the
+    last USE, not the last login — continuous use never forces a re-login, and it
+    only re-authenticates after real inactivity.
+
+    Call this ONLY right after a scrape that actually worked (which proves the
+    cookies are still alive). Touching an unproven session would keep a dead one
+    alive forever and every request would then fail behind a logged-out wall.
+    """
+    with _SESSION_LOCK:
+        try:
+            os.utime(SESSION_FILE, None)
+        except OSError:
+            pass
+
+
 async def save_session(context):
     """Persist Playwright's storage state atomically.
 
