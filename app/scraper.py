@@ -13,7 +13,7 @@ from app.navigator import (
     search_term,
 )
 from app.tree_ai import suggest_refinements
-from app.session import is_session_valid, save_session, SESSION_FILE
+from app.session import is_session_valid, save_session, touch_session, SESSION_FILE
 from app.config import RS_EMAIL, RS_PASSWORD
 from app.cancellation import ScrapeCancelled, check_cancel as _check_cancel
 
@@ -665,6 +665,9 @@ async def scrape_route(question, route, progress=None, cancel=None):
             _check_cancel(cancel)
             emit("scraping")  # esperando y leyendo la grilla de precios en vivo
             await wait_rsmeans_data(page)
+            # The grid loaded, so the session is alive: slide the cache window from
+            # 'now' so continuous use doesn't force a re-login.
+            touch_session()
 
             # ================= GRID =================
             rows = await scrape_grid(page)
@@ -796,13 +799,12 @@ async def scrape_search(question, term, progress=None, cancel=None):
             emit("navigating")  # escribiendo el termino en el buscador de RSMeans
             print(f"\n>>> BUSQUEDA EN VIVO: escribiendo {term!r} en el buscador")
             await page.fill("#searchTextBox", term)
-            # "all" = a line matches only if it contains EVERY word (an AND), which
-            # is also the site's own default. This is what makes "add a
-            # characteristic to narrow it down" actually work: refining "pipe" to
-            # "pipe steel" must SHRINK the set to lines carrying both words, not
-            # broaden it. ("any" is an OR — adding a word would return MORE rows,
-            # contradicting the guided-narrowing UX.) The SEARCH_MAX_ROWS cap + the
-            # "add more detail" notice still handle a single broad word.
+            # "all" = a line matches only if it contains EVERY word (an AND). This is
+            # what makes "add a characteristic to narrow it down" actually work:
+            # refining "pipe" to "pipe steel" must SHRINK the set to lines carrying
+            # both words, not broaden it. ("any" is an OR — adding a word would return
+            # MORE rows, contradicting the guided-narrowing UX.) The SEARCH_MAX_ROWS
+            # cap + the "add more detail" notice still handle a single broad word.
             try:
                 await page.select_option("#drpSearch", "all")
             except Exception:
@@ -817,6 +819,7 @@ async def scrape_search(question, term, progress=None, cancel=None):
             # SEARCH_MAX_ROWS; beyond that -> load the cap and tell the user to
             # narrow the search.
             await wait_rsmeans_data(page)
+            touch_session()  # grid loaded -> session alive: slide the cache window
             total = await _read_total_records(page)
             truncated = False
             notice = None

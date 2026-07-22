@@ -687,6 +687,14 @@ def _item_candidates(question, start_path):
     if not strong or len(strong) > 12:
         return None
 
+    # A single, non-decisive match (weak score) is a worse experience than the
+    # normal division/section flow: for a multi-attribute equipment query like
+    # "hvac air split 1 ton" one odd literal hit is not what the user wants — the
+    # section route surfaces SEVERAL real options. Defer unless the lone match is a
+    # strong full-phrase hit (>= 1.5), which IS worth a one-item confirm.
+    if len(strong) == 1 and strong[0]["score"] < 1.5:
+        return None
+
     strong = strong[:3]
 
     candidates = [
@@ -715,7 +723,8 @@ def _item_candidates(question, start_path):
         "confidence": "medium",
         "candidates": candidates,
         "clarify_questions": [
-            "Which of these items do you mean? Reply with its number (1-3) or its line number."
+            f"Which of these items do you mean? Reply with its number "
+            f"(1-{len(candidates)}) or its line number."
         ],
         "fallback_used": False,
         "ambiguous": True,
@@ -742,7 +751,7 @@ def build_item_clarification(question, candidates):
         )
     lines += [
         "",
-        "Reply with its number (1-3) or its line number to confirm, "
+        f"Reply with its number (1-{len(candidates)}) or its line number to confirm, "
         "or describe it differently to refine the search.",
     ]
     return {
@@ -754,7 +763,8 @@ def build_item_clarification(question, candidates):
         "best_match": best,
         "top_score": top_score,
         "clarify_questions": [
-            "Which of these items do you mean? Reply with its number (1-3) or its line number."
+            f"Which of these items do you mean? Reply with its number "
+            f"(1-{len(candidates)}) or its line number."
         ],
         "confidence": "high" if best else "medium",
         "how_to_ask": formatting_guidance(),

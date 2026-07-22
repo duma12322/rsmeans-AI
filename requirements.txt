@@ -7,8 +7,9 @@ playwright>=1.49.0
 crawl4ai==0.4.24
 
 # DATABASE
-sqlalchemy>=2.0.0
-aiosqlite>=0.20.0
+# La persistencia usa el modulo sqlite3 de la biblioteca estandar (app/db.py),
+# con columnas tipadas y migraciones aditivas ALTER TABLE. No hay ORM: por eso
+# aqui no se listan sqlalchemy ni aiosqlite.
 
 # ENV CONFIG
 python-dotenv>=1.0.0

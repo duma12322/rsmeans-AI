@@ -193,6 +193,12 @@ def names_object(question, timeout=15):
         "or use (steel, stainless, white, 6 inch, portable, security).\n"
         "An activity/service/fee IS a valid subject: it maps to a specific catalog "
         "line, so treat it as named (true), not as too-broad.\n"
+        "Equipment and building SYSTEMS are named subjects too — an HVAC unit, a "
+        "split / mini-split system, an air handler, furnace, boiler, heat pump, "
+        "condenser, rooftop unit, chiller, elevator, panelboard, transformer, pump "
+        "— EVEN when described only by type and size (e.g. \"air split, 1 ton\"). A "
+        "trade/system word (HVAC, plumbing, electrical) combined with a type or a "
+        "size names the thing to price; treat it as named (true).\n"
         "The text may be Spanish (lavaplatos = sink, tubo = pipe, puerta = door, "
         "demolicion = demolition).\n"
         "Reply with ONLY JSON, no prose: "
@@ -208,7 +214,10 @@ def names_object(question, timeout=15):
         '- "paint interior walls" -> {"names_object": true, "object": "walls"}\n'
         '- "plumbing demolition" -> {"names_object": true, "object": "demolition"}\n'
         '- "architectural fees" -> {"names_object": true, "object": "fees"}\n'
-        '- "interior surface preparation" -> {"names_object": true, "object": "surface preparation"}\n\n'
+        '- "interior surface preparation" -> {"names_object": true, "object": "surface preparation"}\n'
+        '- "hvac, air split, 1 ton" -> {"names_object": true, "object": "hvac split system"}\n'
+        '- "rooftop hvac unit" -> {"names_object": true, "object": "hvac unit"}\n'
+        '- "mini split heat pump" -> {"names_object": true, "object": "heat pump"}\n\n'
         f"Text: {question}\nJSON:"
     )
     try:
