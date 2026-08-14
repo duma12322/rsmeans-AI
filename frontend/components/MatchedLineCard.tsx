@@ -1,6 +1,7 @@
 import type { Row } from "@/lib/api";
 import { amount, prettyLine } from "@/lib/format";
 import { CopyButton } from "./CopyButton";
+import { SendToFormButton } from "./SendToFormButton";
 
 // The single, exact line the user asked for (direct code lookup). Highlighted
 // because it's THE answer, not one row among many.
@@ -32,6 +33,14 @@ export function MatchedLineCard({ row }: { row: Row }) {
             per {row.unit}
           </p>
         )}
+
+        {/* Only rendered when embedded in CostSeg: fills the open form with this
+            line (code, description, unit and the Total incl. O&P price). */}
+        <SendToFormButton
+          row={row}
+          label="Use in form"
+          className="mt-3 border border-indigo-200 bg-white px-2.5 py-1 text-indigo-700 shadow-sm dark:border-indigo-500/30 dark:bg-slate-900 dark:text-indigo-300"
+        />
 
         <div className="mt-4 grid grid-cols-2 gap-3">
           <PriceTile

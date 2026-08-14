@@ -5,6 +5,7 @@ import type { Row } from "@/lib/api";
 import { amount, prettyLine, rowToTsv } from "@/lib/format";
 import { copyText } from "@/lib/clipboard";
 import { CopyButton } from "./CopyButton";
+import { SendToFormButton } from "./SendToFormButton";
 
 type SortKey = "line" | "description" | "unit" | "bare" | "op";
 type SortDir = "asc" | "desc";
@@ -366,11 +367,18 @@ export function ResultsTable({
                     </td>
                   )}
                   <td className="px-2 py-2 text-right">
-                    <CopyButton
-                      text={rowToTsv(r)}
-                      title="Copy row"
-                      className="opacity-0 group-hover:opacity-100 focus:opacity-100"
-                    />
+                    <div className="inline-flex items-center gap-1">
+                      {/* Only rendered when embedded in CostSeg */}
+                      <SendToFormButton
+                        row={r}
+                        className="opacity-0 group-hover:opacity-100 focus:opacity-100"
+                      />
+                      <CopyButton
+                        text={rowToTsv(r)}
+                        title="Copy row"
+                        className="opacity-0 group-hover:opacity-100 focus:opacity-100"
+                      />
+                    </div>
                   </td>
                 </tr>
               );
