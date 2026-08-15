@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.scraper import start_browser
 from app.navigator import chapter_reference, _extract_code
+from app.abbreviate import LIMITS as ABBREVIATION_LIMITS, abbreviate_description
 
 app = FastAPI()
 
@@ -429,6 +430,31 @@ def _finalize_turn(sid, sess, result):
         result.setdefault("status", "ok")
         result["session_id"] = sid
     return result
+
+
+class AbbreviateRequest(BaseModel):
+    description: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="The catalog line description to shorten.",
+        examples=["Copper wire, 600 volt, type THW, stranded, #12 AWG"],
+    )
+
+
+@app.post("/abbreviate")
+async def abbreviate(req: AbbreviateRequest):
+    """
+    Three progressively shorter versions of a line description, for the CostSeg
+    description field (50-char cap). Returns {"low", "medium", "high"} — or an
+    empty object when the model is unreachable, which the frontend treats as a
+    cue to use its own rule-based abbreviator rather than an error.
+
+    Runs on a plain worker thread, NOT `_executor`: that one is the single
+    browser worker, and a quick text call must not queue behind a live scrape.
+    """
+    levels = await asyncio.to_thread(abbreviate_description, req.description)
+    return {"levels": levels, "limits": ABBREVIATION_LIMITS}
 
 
 @app.post("/ask")

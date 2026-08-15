@@ -82,14 +82,17 @@ export function targetOrigin(): string | null {
 // Map an RSMeans row onto the CostSeg form fields.
 // `amount` is deliberately absent: that's the take-off quantity the estimator
 // enters, not something RSMeans knows.
-export function rowToSelection(row: Row): CostSegSelection {
+//
+// `description` overrides the row's own text — that's how an abbreviation chosen
+// in the dialog travels, since the form caps descriptions at 50 characters.
+export function rowToSelection(row: Row, description?: string): CostSegSelection {
   // Total incl. O&P is the figure the estimate is built on; bare total is the
   // fallback for rows RSMeans publishes without it.
   const price = row.total_op ?? row.bare_total;
 
   return {
     csiNumber: prettyLine(row.line_number),
-    description: row.description,
+    description: description?.trim() || row.description,
     unit: normalizeUnit(row.unit, row.is_percent),
     unitCost: price ? String(price) : undefined,
   };
@@ -97,7 +100,7 @@ export function rowToSelection(row: Row): CostSegSelection {
 
 // Push a row into the CostSeg form. Returns false when there's nowhere to send
 // it (not embedded, or the parent origin couldn't be determined).
-export function sendToCostSeg(row: Row): boolean {
+export function sendToCostSeg(row: Row, description?: string): boolean {
   if (!isEmbedded()) return false;
 
   const origin = targetOrigin();
@@ -109,7 +112,7 @@ export function sendToCostSeg(row: Row): boolean {
   }
 
   window.parent.postMessage(
-    { type: SELECT_MESSAGE, payload: rowToSelection(row) },
+    { type: SELECT_MESSAGE, payload: rowToSelection(row, description) },
     origin
   );
 
