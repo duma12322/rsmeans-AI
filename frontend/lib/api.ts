@@ -1,7 +1,7 @@
 // Typed client for the RSMeans FastAPI backend (POST /ask).
 // The backend returns a flat object discriminated by `status`.
 
-const API_URL =
+export const API_URL =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "http://localhost:8000";
 
 export type Confidence = "high" | "medium" | "low";

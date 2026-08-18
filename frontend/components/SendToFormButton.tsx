@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import type { Row } from "@/lib/api";
 import { isEmbedded, sendToCostSeg } from "@/lib/embed";
+import { COSTSEG_DESCRIPTION_MAX } from "@/lib/abbreviate";
+import { AbbreviateDialog } from "./AbbreviateDialog";
 
 // Pushes one row into the CostSeg Element form open behind this panel.
 // Renders nothing when the app isn't embedded — standalone there's no form to
@@ -20,22 +22,36 @@ export function SendToFormButton({
   // an effect keeps the server and first client render identical.
   const [embedded, setEmbedded] = useState(false);
   const [state, setState] = useState<"idle" | "sent" | "failed">("idle");
+  // Open while the user picks how to shorten a description that doesn't fit.
+  const [shortening, setShortening] = useState(false);
 
   useEffect(() => setEmbedded(isEmbedded()), []);
 
   if (!embedded) return null;
 
-  function onClick() {
+  function send(description?: string) {
     // A failed send is shown, not swallowed: silently doing nothing on click
     // reads as a broken button with no way to tell why.
-    const ok = sendToCostSeg(row);
+    const ok = sendToCostSeg(row, description);
     setState(ok ? "sent" : "failed");
     setTimeout(() => setState("idle"), ok ? 1200 : 2500);
+  }
+
+  function onClick() {
+    // Over the form's cap, the user chooses the wording instead of CostSeg
+    // truncating mid-word — that cut usually lands on the detail that
+    // identifies the line (gauge, voltage, type code).
+    if ((row.description || "").length > COSTSEG_DESCRIPTION_MAX) {
+      setShortening(true);
+      return;
+    }
+    send();
   }
 
   const failed = state === "failed";
 
   return (
+    <>
     <button
       type="button"
       onClick={onClick}
@@ -60,6 +76,18 @@ export function SendToFormButton({
         </span>
       )}
     </button>
+
+    {shortening && (
+      <AbbreviateDialog
+        description={row.description}
+        onCancel={() => setShortening(false)}
+        onConfirm={(text) => {
+          setShortening(false);
+          send(text);
+        }}
+      />
+    )}
+    </>
   );
 }
 
