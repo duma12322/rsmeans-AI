@@ -19,6 +19,10 @@ export interface CostSegSelection {
   unit?: string;
   unitCost?: string;
   amount?: string;
+  // Both cost figures, so CostSeg can ask the estimator which one to use:
+  // new construction / improvement -> Bare Total; otherwise -> Total O&P.
+  bareTotal?: string;
+  totalOp?: string;
 }
 
 // The CostSeg Element form only accepts these units (DTO/Element.cs -> Units).
@@ -83,15 +87,18 @@ export function targetOrigin(): string | null {
 // `amount` is deliberately absent: that's the take-off quantity the estimator
 // enters, not something RSMeans knows.
 export function rowToSelection(row: Row): CostSegSelection {
-  // Total incl. O&P is the figure the estimate is built on; bare total is the
-  // fallback for rows RSMeans publishes without it.
+  // Total incl. O&P is the default the estimate is built on; bare total is the
+  // fallback for rows RSMeans publishes without it. Both are sent so CostSeg can
+  // let the estimator choose (new construction / improvement -> Bare Total).
   const price = row.total_op ?? row.bare_total;
 
   return {
     csiNumber: prettyLine(row.line_number),
     description: row.description,
     unit: normalizeUnit(row.unit, row.is_percent),
-    unitCost: price ? String(price) : undefined,
+    unitCost: price != null ? String(price) : undefined,
+    bareTotal: row.bare_total != null ? String(row.bare_total) : undefined,
+    totalOp: row.total_op != null ? String(row.total_op) : undefined,
   };
 }
 
