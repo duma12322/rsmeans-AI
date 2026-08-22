@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { EmbedGate } from "@/components/EmbedGate";
 
 export const metadata: Metadata = {
   title: "RSMeans Cost Assistant",
@@ -29,7 +30,9 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInit }} />
       </head>
-      <body className="min-h-screen">{children}</body>
+      <body className="min-h-screen">
+        <EmbedGate>{children}</EmbedGate>
+      </body>
     </html>
   );
 }
